@@ -27,6 +27,8 @@ import {
   DatePicker,
   Typography,
   Modal,
+  RadioGroup,
+  Radio,
 } from '@douyinfe/semi-ui';
 import dayjs from 'dayjs';
 import { useTranslation } from 'react-i18next';
@@ -46,6 +48,7 @@ export default function SettingsLog(props) {
   const [loadingCleanHistoryLog, setLoadingCleanHistoryLog] = useState(false);
   const [inputs, setInputs] = useState({
     LogConsumeEnabled: false,
+    LogModelDisplayMode: "0",
     historyTimestamp: dayjs().subtract(1, 'month').toDate(),
   });
   const refForm = useRef();
@@ -187,6 +190,9 @@ export default function SettingsLog(props) {
       }
     }
     currentInputs['historyTimestamp'] = inputs.historyTimestamp;
+    if (currentInputs['LogModelDisplayMode'] !== undefined) {
+      currentInputs['LogModelDisplayMode'] = String(currentInputs['LogModelDisplayMode']);
+    }
     setInputs(Object.assign(inputs, currentInputs));
     setInputsRow(structuredClone(currentInputs));
     refForm.current.setValues(currentInputs);
@@ -215,6 +221,22 @@ export default function SettingsLog(props) {
                     });
                   }}
                 />
+              </Col>
+              <Col xs={24} sm={12} md={8} lg={8} xl={8}>
+                <Form.RadioGroup
+                  field={"LogModelDisplayMode"}
+                  label={t("日志模型显示模式")}
+                  onChange={(e) => {
+                    setInputs({
+                      ...inputs,
+                      LogModelDisplayMode: e.target.value,
+                    });
+                  }}
+                >
+                  <Radio value={"0"}>{t("正常显示")}</Radio>
+                  <Radio value={"1"}>{t("隐藏实际模型")}</Radio>
+                  <Radio value={"2"}>{t("统一显示请求模型")}</Radio>
+                </Form.RadioGroup>
               </Col>
               <Col xs={24} sm={12} md={8} lg={8} xl={8}>
                 <Spin spinning={loadingCleanHistoryLog}>

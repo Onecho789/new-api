@@ -142,7 +142,7 @@ const RechargeCard = ({
               </div>
 
               {/* 统计数据 */}
-              <div className='grid grid-cols-3 gap-6 mt-4'>
+              <div className={`grid ${userState?.user?.gift_quota > 0 ? 'grid-cols-4' : 'grid-cols-3'} gap-6 mt-4`}>
                 {/* 当前余额 */}
                 <div className='text-center'>
                   <div
@@ -167,6 +167,33 @@ const RechargeCard = ({
                     </Text>
                   </div>
                 </div>
+
+                {/* 累计赠送 */}
+                {userState?.user?.gift_quota > 0 && (
+                  <div className='text-center'>
+                    <div
+                      className='text-base sm:text-2xl font-bold mb-2'
+                      style={{ color: 'white' }}
+                    >
+                      {renderQuota(userState?.user?.gift_quota)}
+                    </div>
+                    <div className='flex items-center justify-center text-sm'>
+                      <IconGift
+                        size='small'
+                        className='mr-1'
+                        style={{ color: 'rgba(255,255,255,0.8)' }}
+                      />
+                      <Text
+                        style={{
+                          color: 'rgba(255,255,255,0.8)',
+                          fontSize: '12px',
+                        }}
+                      >
+                        {t('累计赠送')}
+                      </Text>
+                    </div>
+                  </div>
+                )}
 
                 {/* 历史消耗 */}
                 <div className='text-center'>

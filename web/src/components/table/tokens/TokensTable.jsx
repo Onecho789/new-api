@@ -49,8 +49,16 @@ const TokensTable = (tokensData) => {
     setEditingToken,
     setShowEdit,
     refresh,
+    isAdmin,
     t,
   } = tokensData;
+
+  // Check if any token has periodic quota configured
+  const hasPeriodicQuota = useMemo(() => {
+    return tokens.some(
+      (t) => t.quota_limit_period && t.quota_limit_period !== 'never' && t.quota_limit > 0,
+    );
+  }, [tokens]);
 
   // Get all columns
   const columns = useMemo(() => {
@@ -67,6 +75,8 @@ const TokensTable = (tokensData) => {
       setEditingToken,
       setShowEdit,
       refresh,
+      isAdmin,
+      hasPeriodicQuota,
     });
   }, [
     t,
@@ -81,6 +91,8 @@ const TokensTable = (tokensData) => {
     setEditingToken,
     setShowEdit,
     refresh,
+    isAdmin,
+    hasPeriodicQuota,
   ]);
 
   // Handle compact mode by removing fixed positioning

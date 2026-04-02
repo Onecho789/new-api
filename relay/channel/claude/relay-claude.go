@@ -401,10 +401,10 @@ func RequestOpenAI2ClaudeMessage(c *gin.Context, textRequest dto.GeneralOpenAIRe
 	return &claudeRequest, nil
 }
 
-func StreamResponseClaude2OpenAI(claudeResponse *dto.ClaudeResponse) *dto.ChatCompletionsStreamResponse {
+func StreamResponseClaude2OpenAI(claudeResponse *dto.ClaudeResponse, info *relaycommon.RelayInfo) *dto.ChatCompletionsStreamResponse {
 	var response dto.ChatCompletionsStreamResponse
 	response.Object = "chat.completion.chunk"
-	response.Model = claudeResponse.Model
+	response.Model = info.GetResponseModelName()
 	response.Choices = make([]dto.ChatCompletionsStreamResponseChoice, 0)
 	tools := make([]dto.ToolCallResponse, 0)
 	fcIdx := 0
@@ -418,7 +418,7 @@ func StreamResponseClaude2OpenAI(claudeResponse *dto.ClaudeResponse) *dto.ChatCo
 	if claudeResponse.Type == "message_start" {
 		if claudeResponse.Message != nil {
 			response.Id = claudeResponse.Message.Id
-			response.Model = claudeResponse.Message.Model
+			response.Model = info.GetResponseModelName()
 		}
 		//claudeUsage = &claudeResponse.Message.Usage
 		choice.Delta.SetContentString("")
@@ -485,7 +485,7 @@ func StreamResponseClaude2OpenAI(claudeResponse *dto.ClaudeResponse) *dto.ChatCo
 	return &response
 }
 
-func ResponseClaude2OpenAI(claudeResponse *dto.ClaudeResponse) *dto.OpenAITextResponse {
+func ResponseClaude2OpenAI(claudeResponse *dto.ClaudeResponse, info *relaycommon.RelayInfo) *dto.OpenAITextResponse {
 	choices := make([]dto.OpenAITextResponseChoice, 0)
 	fullTextResponse := dto.OpenAITextResponse{
 		Id:      fmt.Sprintf("chatcmpl-%s", common.GetUUID()),
@@ -540,7 +540,7 @@ func ResponseClaude2OpenAI(claudeResponse *dto.ClaudeResponse) *dto.OpenAITextRe
 		choice.Message.SetToolCalls(tools)
 	}
 	choice.Message.ReasoningContent = thinkingContent
-	fullTextResponse.Model = claudeResponse.Model
+	fullTextResponse.Model = info.GetResponseModelName()
 	choices = append(choices, choice)
 	fullTextResponse.Choices = choices
 	return &fullTextResponse
@@ -751,6 +751,10 @@ func HandleStreamResponseData(c *gin.Context, info *relaycommon.RelayInfo, claud
 			// message_start, 获取usage
 			if claudeResponse.Message != nil {
 				info.UpstreamModelName = claudeResponse.Message.Model
+				responseModel := info.GetResponseModelName()
+				if responseModel != claudeResponse.Message.Model {
+					data = strings.ReplaceAll(data, claudeResponse.Message.Model, responseModel)
+				}
 			}
 		} else if claudeResponse.Type == "message_delta" {
 			// 确保 message_delta 的 usage 包含完整的 input_tokens 和 cache 相关字段
@@ -761,7 +765,7 @@ func HandleStreamResponseData(c *gin.Context, info *relaycommon.RelayInfo, claud
 		}
 		helper.ClaudeChunkData(c, claudeResponse, data)
 	} else if info.RelayFormat == types.RelayFormatOpenAI {
-		response := StreamResponseClaude2OpenAI(&claudeResponse)
+		response := StreamResponseClaude2OpenAI(&claudeResponse, info)
 
 		if !FormatClaudeResponseInfo(&claudeResponse, response, claudeInfo) {
 			return nil
@@ -853,14 +857,20 @@ func HandleClaudeResponseData(c *gin.Context, info *relaycommon.RelayInfo, claud
 	var responseData []byte
 	switch info.RelayFormat {
 	case types.RelayFormatOpenAI:
-		openaiResponse := ResponseClaude2OpenAI(&claudeResponse)
-		openaiResponse.Usage = buildOpenAIStyleUsageFromClaudeUsage(claudeInfo.Usage)
+		openaiResponse := ResponseClaude2OpenAI(&claudeResponse, info)
+		openaiResponse.Usage = *claudeInfo.Usage
 		responseData, err = json.Marshal(openaiResponse)
 		if err != nil {
 			return types.NewError(err, types.ErrorCodeBadResponseBody)
 		}
 	case types.RelayFormatClaude:
-		responseData = data
+		// Replace model name in raw response for Claude native format
+		responseModel := info.GetResponseModelName()
+		if responseModel != claudeResponse.Model && claudeResponse.Model != "" {
+			responseData = []byte(strings.ReplaceAll(string(data), claudeResponse.Model, responseModel))
+		} else {
+			responseData = data
+		}
 	}
 
 	if claudeResponse.Usage != nil && claudeResponse.Usage.ServerToolUse != nil && claudeResponse.Usage.ServerToolUse.WebSearchRequests > 0 {

@@ -284,29 +284,176 @@ const renderAllowIps = (text, t) => {
   return <Space wrap>{ipTags}</Space>;
 };
 
+// Render periodic quota usage column: remaining / total with progress bar
+const renderPeriodicQuotaUsage = (text, record, t) => {
+  const hasLimit =
+    record.quota_limit_period &&
+    record.quota_limit_period !== 'never' &&
+    record.quota_limit > 0;
+  if (!hasLimit) {
+    return <span style={{ color: 'var(--semi-color-text-2)' }}>-</span>;
+  }
+  const limitUsed = parseInt(record.quota_limit_used) || 0;
+  const limitTotal = parseInt(record.quota_limit) || 0;
+  const limitRemain = Math.max(0, limitTotal - limitUsed);
+  const percent = limitTotal > 0 ? (limitRemain / limitTotal) * 100 : 0;
+  const remainColor = percent <= 10
+    ? 'var(--semi-color-danger)'
+    : percent <= 30
+      ? 'var(--semi-color-warning)'
+      : 'var(--semi-color-text-0)';
+
+  const popoverContent = (
+    <div className='text-xs p-2'>
+      <Typography.Paragraph copyable={{ content: renderQuota(limitUsed) }}>
+        {t('已用周期额度')}: {renderQuota(limitUsed)}
+      </Typography.Paragraph>
+      <Typography.Paragraph copyable={{ content: renderQuota(limitRemain) }}>
+        {t('剩余周期额度')}: {renderQuota(limitRemain)} ({percent.toFixed(0)}%)
+      </Typography.Paragraph>
+      <Typography.Paragraph copyable={{ content: renderQuota(limitTotal) }}>
+        {t('周期限额')}: {renderQuota(limitTotal)}
+      </Typography.Paragraph>
+      {record.quota_limit_reset_time > 0 && (
+        <Typography.Paragraph>
+          {t('下次重置')}: {timestamp2string(record.quota_limit_reset_time)}
+        </Typography.Paragraph>
+      )}
+    </div>
+  );
+
+  return (
+    <Popover content={popoverContent} position='top'>
+      <div style={{ width: 140, cursor: 'pointer' }}>
+        <div className='flex items-baseline justify-between' style={{ marginBottom: 2 }}>
+          <span className='text-sm font-medium' style={{ color: remainColor }}>
+            {renderQuota(limitRemain)}
+          </span>
+          <span className='text-xs' style={{ color: 'var(--semi-color-text-2)' }}>
+            / {renderQuota(limitTotal)}
+          </span>
+        </div>
+        <Progress
+          percent={percent}
+          stroke={getProgressColor(percent)}
+          aria-label='periodic quota usage'
+          showInfo={false}
+          size='small'
+          style={{ marginBottom: 0 }}
+        />
+      </div>
+    </Popover>
+  );
+};
+
+// Render periodic quota period type column
+const renderPeriodicType = (text, record, t) => {
+  const periodLabels = {
+    daily: t('每日'),
+    weekly: t('每周'),
+    monthly: t('每月'),
+    custom: t('自定义'),
+  };
+  const hasLimit =
+    record.quota_limit_period &&
+    record.quota_limit_period !== 'never' &&
+    record.quota_limit > 0;
+  if (!hasLimit) {
+    return <span style={{ color: 'var(--semi-color-text-2)' }}>-</span>;
+  }
+  const label = periodLabels[record.quota_limit_period] || record.quota_limit_period;
+  if (record.quota_limit_period === 'custom' && record.quota_limit_custom_seconds > 0) {
+    return (
+      <Tooltip content={`${record.quota_limit_custom_seconds}s`}>
+        <Tag color='blue' shape='circle'>{label}</Tag>
+      </Tooltip>
+    );
+  }
+  return <Tag color='blue' shape='circle'>{label}</Tag>;
+};
+
 // Render separate quota usage column
 const renderQuotaUsage = (text, record, t) => {
   const { Paragraph } = Typography;
   const used = parseInt(record.used_quota) || 0;
   const remain = parseInt(record.remain_quota) || 0;
   const total = used + remain;
+
+  // Periodic quota limit info
+  const hasPeriodicLimit =
+    record.quota_limit_period &&
+    record.quota_limit_period !== 'never' &&
+    record.quota_limit > 0;
+
+  const periodLabels = {
+    daily: t('每日'),
+    weekly: t('每周'),
+    monthly: t('每月'),
+    custom: t('自定义'),
+  };
+
+  const renderPeriodicInfo = () => {
+    if (!hasPeriodicLimit) return null;
+    const periodLabel = periodLabels[record.quota_limit_period] || record.quota_limit_period;
+    const limitUsed = parseInt(record.quota_limit_used) || 0;
+    const limitTotal = parseInt(record.quota_limit) || 0;
+    const limitRemain = Math.max(0, limitTotal - limitUsed);
+    const limitPercent = limitTotal > 0 ? (limitRemain / limitTotal) * 100 : 0;
+    return (
+      <>
+        <div style={{ borderTop: '1px solid #e8e8e8', margin: '4px 0' }} />
+        <Paragraph>
+          {t('周期限额')} ({periodLabel}): {renderQuota(limitUsed)} / {renderQuota(limitTotal)} ({limitPercent.toFixed(0)}%)
+        </Paragraph>
+        {record.quota_limit_reset_time > 0 && (
+          <Paragraph>
+            {t('下次重置')}: {timestamp2string(record.quota_limit_reset_time)}
+          </Paragraph>
+        )}
+      </>
+    );
+  };
+
   if (record.unlimited_quota) {
     const popoverContent = (
       <div className='text-xs p-2'>
         <Paragraph copyable={{ content: renderQuota(used) }}>
           {t('已用额度')}: {renderQuota(used)}
         </Paragraph>
+        {renderPeriodicInfo()}
       </div>
     );
     return (
       <Popover content={popoverContent} position='top'>
-        <Tag color='white' shape='circle'>
-          {t('无限额度')}
-        </Tag>
+        <div className='inline-flex items-center gap-1.5 cursor-pointer'>
+          <span style={{
+            display: 'inline-block',
+            width: 6,
+            height: 6,
+            borderRadius: '50%',
+            background: 'var(--semi-color-success)',
+            flexShrink: 0,
+          }} />
+          <span className='text-sm font-medium' style={{ color: 'var(--semi-color-success)' }}>
+            {t('无限额度')}
+          </span>
+          {hasPeriodicLimit && (
+            <Tag size='small' color='blue' shape='circle' style={{ fontSize: 10, lineHeight: 1, padding: '0 4px' }}>
+              {periodLabels[record.quota_limit_period]}
+            </Tag>
+          )}
+        </div>
       </Popover>
     );
   }
+
   const percent = total > 0 ? (remain / total) * 100 : 0;
+  const remainColor = percent <= 10
+    ? 'var(--semi-color-danger)'
+    : percent <= 30
+      ? 'var(--semi-color-warning)'
+      : 'var(--semi-color-text-0)';
+
   const popoverContent = (
     <div className='text-xs p-2'>
       <Paragraph copyable={{ content: renderQuota(used) }}>
@@ -318,22 +465,30 @@ const renderQuotaUsage = (text, record, t) => {
       <Paragraph copyable={{ content: renderQuota(total) }}>
         {t('总额度')}: {renderQuota(total)}
       </Paragraph>
+      {renderPeriodicInfo()}
     </div>
   );
+
   return (
     <Popover content={popoverContent} position='top'>
-      <Tag color='white' shape='circle'>
-        <div className='flex flex-col items-end'>
-          <span className='text-xs leading-none'>{`${renderQuota(remain)} / ${renderQuota(total)}`}</span>
-          <Progress
-            percent={percent}
-            stroke={getProgressColor(percent)}
-            aria-label='quota usage'
-            format={() => `${percent.toFixed(0)}%`}
-            style={{ width: '100%', marginTop: '1px', marginBottom: 0 }}
-          />
+      <div style={{ width: 140, cursor: 'pointer' }}>
+        <div className='flex items-baseline justify-between' style={{ marginBottom: 2 }}>
+          <span className='text-sm font-medium' style={{ color: remainColor }}>
+            {renderQuota(remain)}
+          </span>
+          <span className='text-xs' style={{ color: 'var(--semi-color-text-2)' }}>
+            / {renderQuota(total)}
+          </span>
         </div>
-      </Tag>
+        <Progress
+          percent={percent}
+          stroke={getProgressColor(percent)}
+          aria-label='quota usage'
+          showInfo={false}
+          size='small'
+          style={{ marginBottom: 0 }}
+        />
+      </div>
     </Popover>
   );
 };
@@ -469,12 +624,22 @@ export const getTokensColumns = ({
   setEditingToken,
   setShowEdit,
   refresh,
+  isAdmin = false,
+  hasPeriodicQuota = false,
 }) => {
-  return [
+  const columns = [
     {
       title: t('名称'),
       dataIndex: 'name',
     },
+    ...(isAdmin
+      ? [
+          {
+            title: t('用户名'),
+            dataIndex: 'username',
+          },
+        ]
+      : []),
     {
       title: t('状态'),
       dataIndex: 'status',
@@ -486,6 +651,20 @@ export const getTokensColumns = ({
       key: 'quota_usage',
       render: (text, record) => renderQuotaUsage(text, record, t),
     },
+    ...(hasPeriodicQuota
+      ? [
+          {
+            title: t('周期额度'),
+            key: 'periodic_quota_usage',
+            render: (text, record) => renderPeriodicQuotaUsage(text, record, t),
+          },
+          {
+            title: t('周期类型'),
+            key: 'periodic_type',
+            render: (text, record) => renderPeriodicType(text, record, t),
+          },
+        ]
+      : []),
     {
       title: t('分组'),
       dataIndex: 'group',
@@ -553,4 +732,5 @@ export const getTokensColumns = ({
         ),
     },
   ];
+  return columns;
 };

@@ -61,6 +61,7 @@ const EditRedemptionModal = (props) => {
   const getInitValues = () => ({
     name: '',
     quota: 100000,
+    gift_quota: 0,
     count: 1,
     expired_time: null,
   });
@@ -105,6 +106,7 @@ const EditRedemptionModal = (props) => {
     let localInputs = { ...values };
     localInputs.count = parseInt(localInputs.count) || 0;
     localInputs.quota = parseInt(localInputs.quota) || 0;
+    localInputs.gift_quota = parseInt(localInputs.gift_quota) || 0;
     localInputs.name = name;
     if (!localInputs.expired_time) {
       localInputs.expired_time = 0;
@@ -317,7 +319,42 @@ const EditRedemptionModal = (props) => {
                         showClear
                       />
                     </Col>
-                    {!isEdit && (
+                    <Col span={12}>
+                      <Form.AutoComplete
+                        field='gift_quota'
+                        label={t('赠送额度')}
+                        placeholder={t('请输入赠送额度')}
+                        style={{ width: '100%' }}
+                        type='number'
+                        extraText={
+                          Number(values.gift_quota) > 0
+                            ? renderQuotaWithPrompt(
+                                Number(values.gift_quota) || 0,
+                              )
+                            : t('可选，不退款部分')
+                        }
+                        data={[
+                          { value: 0, label: t('无赠送') },
+                          { value: 500000, label: '1$' },
+                          { value: 2500000, label: '5$' },
+                          { value: 5000000, label: '10$' },
+                          { value: 25000000, label: '50$' },
+                        ]}
+                        showClear
+                      />
+                    </Col>
+                  </Row>
+                  {(Number(values.gift_quota) > 0) && (
+                    <div className='text-xs text-gray-500 mt-1 px-1'>
+                      {t('总额度')}: {renderQuota((Number(values.quota) || 0) + (Number(values.gift_quota) || 0))}
+                      {' = '}
+                      {t('额度')} {renderQuota(Number(values.quota) || 0)}
+                      {' + '}
+                      {t('赠送')} {renderQuota(Number(values.gift_quota) || 0)}
+                    </div>
+                  )}
+                  {!isEdit && (
+                    <Row gutter={12} className='mt-2'>
                       <Col span={12}>
                         <Form.InputNumber
                           field='count'
@@ -338,8 +375,8 @@ const EditRedemptionModal = (props) => {
                           showClear
                         />
                       </Col>
-                    )}
-                  </Row>
+                    </Row>
+                  )}
                 </Card>
               </div>
             )}

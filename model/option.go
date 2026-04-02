@@ -47,6 +47,7 @@ func InitOptionMap() {
 	common.OptionMap["AutomaticDisableChannelEnabled"] = strconv.FormatBool(common.AutomaticDisableChannelEnabled)
 	common.OptionMap["AutomaticEnableChannelEnabled"] = strconv.FormatBool(common.AutomaticEnableChannelEnabled)
 	common.OptionMap["LogConsumeEnabled"] = strconv.FormatBool(common.LogConsumeEnabled)
+	common.OptionMap["LogModelDisplayMode"] = strconv.Itoa(common.LogModelDisplayMode)
 	common.OptionMap["DisplayInCurrencyEnabled"] = strconv.FormatBool(common.DisplayInCurrencyEnabled)
 	common.OptionMap["DisplayTokenStatEnabled"] = strconv.FormatBool(common.DisplayTokenStatEnabled)
 	common.OptionMap["DrawingEnabled"] = strconv.FormatBool(common.DrawingEnabled)
@@ -161,6 +162,7 @@ func InitOptionMap() {
 	common.OptionMap["SensitiveWords"] = setting.SensitiveWordsToString()
 	common.OptionMap["StreamCacheQueueLength"] = strconv.Itoa(setting.StreamCacheQueueLength)
 	common.OptionMap["AutomaticDisableKeywords"] = operation_setting.AutomaticDisableKeywordsToString()
+	common.OptionMap["ErrorMessageReplacements"] = operation_setting.ErrorMessageReplacementsToString()
 	common.OptionMap["AutomaticDisableStatusCodes"] = operation_setting.AutomaticDisableStatusCodesToString()
 	common.OptionMap["AutomaticRetryStatusCodes"] = operation_setting.AutomaticRetryStatusCodesToString()
 	common.OptionMap["ExposeRatioEnabled"] = strconv.FormatBool(ratio_setting.IsExposeRatioEnabled())
@@ -456,6 +458,8 @@ func updateOptionMap(key string, value string) (err error) {
 		err = setting.UpdateModelRequestRateLimitGroupByJSONString(value)
 	case "RetryTimes":
 		common.RetryTimes, _ = strconv.Atoi(value)
+	case "LogModelDisplayMode":
+		common.LogModelDisplayMode, _ = strconv.Atoi(value)
 	case "DataExportInterval":
 		common.DataExportInterval, _ = strconv.Atoi(value)
 	case "DataExportDefaultTime":
@@ -496,6 +500,8 @@ func updateOptionMap(key string, value string) (err error) {
 		setting.SensitiveWordsFromString(value)
 	case "AutomaticDisableKeywords":
 		operation_setting.AutomaticDisableKeywordsFromString(value)
+	case "ErrorMessageReplacements":
+		operation_setting.ErrorMessageReplacementsFromString(value)
 	case "AutomaticDisableStatusCodes":
 		err = operation_setting.AutomaticDisableStatusCodesFromString(value)
 	case "AutomaticRetryStatusCodes":

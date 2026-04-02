@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/i18n"
@@ -34,12 +35,30 @@ func buildMaskedTokenResponses(tokens []*model.Token) []*model.Token {
 func GetAllTokens(c *gin.Context) {
 	userId := c.GetInt("id")
 	pageInfo := common.GetPageQuery(c)
-	tokens, err := model.GetAllUserTokens(userId, pageInfo.GetStartIdx(), pageInfo.GetPageSize())
+	tokenName := c.Query("token_name")
+	tokenKey := c.Query("token")
+	group := c.Query("group")
+	status, _ := strconv.Atoi(c.DefaultQuery("status", "0"))
+
+	if tokenKey != "" {
+		tokenKey = strings.TrimPrefix(tokenKey, "sk-")
+	}
+
+	tokens, err := model.GetAllUserTokens(userId, pageInfo.GetStartIdx(), pageInfo.GetPageSize(), tokenName, tokenKey, status, group)
 	if err != nil {
 		common.ApiError(c, err)
 		return
 	}
-	total, _ := model.CountUserTokens(userId)
+	// Lazy reset periodic quota for display: check and persist any overdue resets
+	now := common.GetTimestamp()
+	for _, t := range tokens {
+		if t.MaybeResetQuotaLimit(now) {
+			if resetErr := model.PersistTokenQuotaLimitReset(t); resetErr != nil {
+				common.SysLog("failed to persist token quota limit reset on list: " + resetErr.Error())
+			}
+		}
+	}
+	total, _ := model.CountUserTokens(userId, tokenName, tokenKey, status, group)
 	pageInfo.SetTotal(int(total))
 	pageInfo.SetItems(buildMaskedTokenResponses(tokens))
 	common.ApiSuccess(c, pageInfo)
@@ -189,7 +208,7 @@ func AddToken(c *gin.Context) {
 	}
 	// 检查用户令牌数量是否已达上限
 	maxTokens := operation_setting.GetMaxUserTokens()
-	count, err := model.CountUserTokens(c.GetInt("id"))
+	count, err := model.CountUserTokens(c.GetInt("id"), "", "", 0)
 	if err != nil {
 		common.ApiError(c, err)
 		return
@@ -207,20 +226,42 @@ func AddToken(c *gin.Context) {
 		common.SysLog("failed to generate token key: " + err.Error())
 		return
 	}
+	// Validate periodic quota limit
+	period := model.NormalizeTokenQuotaLimitPeriod(token.QuotaLimitPeriod)
+	if period != model.TokenQuotaLimitNever {
+		if !model.IsQuotaLimitAllowed(c.GetInt("id")) {
+			common.ApiError(c, fmt.Errorf("您没有配置周期限额的权限"))
+			return
+		}
+		if token.QuotaLimit <= 0 {
+			common.ApiError(c, fmt.Errorf("启用周期限额时必须设置限额值"))
+			return
+		}
+	}
+	if period == model.TokenQuotaLimitCustom && token.QuotaLimitCustomSeconds <= 0 {
+		common.ApiError(c, fmt.Errorf("自定义周期必须设置秒数"))
+		return
+	}
 	cleanToken := model.Token{
-		UserId:             c.GetInt("id"),
-		Name:               token.Name,
-		Key:                key,
-		CreatedTime:        common.GetTimestamp(),
-		AccessedTime:       common.GetTimestamp(),
-		ExpiredTime:        token.ExpiredTime,
-		RemainQuota:        token.RemainQuota,
-		UnlimitedQuota:     token.UnlimitedQuota,
-		ModelLimitsEnabled: token.ModelLimitsEnabled,
-		ModelLimits:        token.ModelLimits,
-		AllowIps:           token.AllowIps,
-		Group:              token.Group,
-		CrossGroupRetry:    token.CrossGroupRetry,
+		UserId:                  c.GetInt("id"),
+		Name:                    token.Name,
+		Key:                     key,
+		CreatedTime:             common.GetTimestamp(),
+		AccessedTime:            common.GetTimestamp(),
+		ExpiredTime:             token.ExpiredTime,
+		RemainQuota:             token.RemainQuota,
+		UnlimitedQuota:          token.UnlimitedQuota,
+		ModelLimitsEnabled:      token.ModelLimitsEnabled,
+		ModelLimits:             token.ModelLimits,
+		AllowIps:                token.AllowIps,
+		Group:                   token.Group,
+		CrossGroupRetry:         token.CrossGroupRetry,
+		QuotaLimitPeriod:        period,
+		QuotaLimitCustomSeconds: token.QuotaLimitCustomSeconds,
+		QuotaLimit:              token.QuotaLimit,
+	}
+	if period != model.TokenQuotaLimitNever && cleanToken.QuotaLimit > 0 {
+		cleanToken.QuotaLimitResetTime = model.CalcTokenQuotaLimitNextResetTime(time.Now(), period, cleanToken.QuotaLimitCustomSeconds)
 	}
 	err = cleanToken.Insert()
 	if err != nil {
@@ -299,6 +340,34 @@ func UpdateToken(c *gin.Context) {
 		cleanToken.AllowIps = token.AllowIps
 		cleanToken.Group = token.Group
 		cleanToken.CrossGroupRetry = token.CrossGroupRetry
+		// Periodic quota limit fields
+		newPeriod := model.NormalizeTokenQuotaLimitPeriod(token.QuotaLimitPeriod)
+		if newPeriod != model.TokenQuotaLimitNever {
+			if !model.IsQuotaLimitAllowed(userId) {
+				common.ApiError(c, fmt.Errorf("您没有配置周期限额的权限"))
+				return
+			}
+			if token.QuotaLimit <= 0 {
+				common.ApiError(c, fmt.Errorf("启用周期限额时必须设置限额值"))
+				return
+			}
+		}
+		if newPeriod == model.TokenQuotaLimitCustom && token.QuotaLimitCustomSeconds <= 0 {
+			common.ApiError(c, fmt.Errorf("自定义周期必须设置秒数"))
+			return
+		}
+		periodChanged := newPeriod != cleanToken.QuotaLimitPeriod || token.QuotaLimitCustomSeconds != cleanToken.QuotaLimitCustomSeconds
+		cleanToken.QuotaLimitPeriod = newPeriod
+		cleanToken.QuotaLimitCustomSeconds = token.QuotaLimitCustomSeconds
+		cleanToken.QuotaLimit = token.QuotaLimit
+		if periodChanged && newPeriod != model.TokenQuotaLimitNever {
+			cleanToken.QuotaLimitUsed = 0
+			cleanToken.QuotaLimitResetTime = model.CalcTokenQuotaLimitNextResetTime(time.Now(), newPeriod, cleanToken.QuotaLimitCustomSeconds)
+		}
+		if newPeriod == model.TokenQuotaLimitNever {
+			cleanToken.QuotaLimitUsed = 0
+			cleanToken.QuotaLimitResetTime = 0
+		}
 	}
 	err = cleanToken.Update()
 	if err != nil {
@@ -310,6 +379,87 @@ func UpdateToken(c *gin.Context) {
 		"message": "",
 		"data":    buildMaskedTokenResponse(cleanToken),
 	})
+}
+
+type TokenBatchUpdate struct {
+	Ids                     []int  `json:"ids"`
+	Action                  string `json:"action"` // "set_quota" | "set_periodic_quota"
+	RemainQuota             int    `json:"remain_quota"`
+	UnlimitedQuota          bool   `json:"unlimited_quota"`
+	QuotaLimitPeriod        string `json:"quota_limit_period"`
+	QuotaLimit              int    `json:"quota_limit"`
+	QuotaLimitCustomSeconds int64  `json:"quota_limit_custom_seconds"`
+}
+
+func BatchUpdateTokens(c *gin.Context) {
+	req := TokenBatchUpdate{}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		common.SysLog(fmt.Sprintf("BatchUpdateTokens: JSON bind error: %v", err))
+		common.ApiErrorI18n(c, i18n.MsgInvalidParams)
+		return
+	}
+	common.SysLog(fmt.Sprintf("BatchUpdateTokens: action=%s, ids=%v, period=%s, quota_limit=%d, custom_seconds=%d, remain_quota=%d, unlimited=%v",
+		req.Action, req.Ids, req.QuotaLimitPeriod, req.QuotaLimit, req.QuotaLimitCustomSeconds, req.RemainQuota, req.UnlimitedQuota))
+	if len(req.Ids) == 0 {
+		common.ApiErrorI18n(c, i18n.MsgInvalidParams)
+		return
+	}
+	userId := c.GetInt("id")
+
+	switch req.Action {
+	case "set_quota":
+		if !req.UnlimitedQuota {
+			if req.RemainQuota < 0 {
+				common.ApiErrorI18n(c, i18n.MsgTokenQuotaNegative)
+				return
+			}
+			maxQuotaValue := int(1000000000 * common.QuotaPerUnit)
+			if req.RemainQuota > maxQuotaValue {
+				common.ApiErrorI18n(c, i18n.MsgTokenQuotaExceedMax, map[string]any{"Max": maxQuotaValue})
+				return
+			}
+		}
+		count, err := model.BatchUpdateTokenQuota(req.Ids, userId, req.RemainQuota, req.UnlimitedQuota)
+		if err != nil {
+			common.ApiError(c, err)
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{
+			"success": true,
+			"message": "",
+			"data":    count,
+		})
+
+	case "set_periodic_quota":
+		period := model.NormalizeTokenQuotaLimitPeriod(req.QuotaLimitPeriod)
+		if period != model.TokenQuotaLimitNever {
+			if !model.IsQuotaLimitAllowed(userId) {
+				common.ApiError(c, fmt.Errorf("您没有配置周期限额的权限"))
+				return
+			}
+			if req.QuotaLimit <= 0 {
+				common.ApiError(c, fmt.Errorf("启用周期限额时必须设置限额值"))
+				return
+			}
+		}
+		if period == model.TokenQuotaLimitCustom && req.QuotaLimitCustomSeconds <= 0 {
+			common.ApiError(c, fmt.Errorf("自定义周期必须设置秒数"))
+			return
+		}
+		count, err := model.BatchUpdateTokenPeriodicQuota(req.Ids, userId, period, req.QuotaLimit, req.QuotaLimitCustomSeconds)
+		if err != nil {
+			common.ApiError(c, err)
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{
+			"success": true,
+			"message": "",
+			"data":    count,
+		})
+
+	default:
+		common.ApiErrorI18n(c, i18n.MsgInvalidParams)
+	}
 }
 
 type TokenBatch struct {

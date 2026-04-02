@@ -29,7 +29,7 @@ import {
   Dropdown,
 } from '@douyinfe/semi-ui';
 import { IconMore } from '@douyinfe/semi-icons';
-import { renderGroup, renderNumber, renderQuota } from '../../../helpers';
+import { renderGroup, renderNumber, renderQuota, timestamp2string } from '../../../helpers';
 
 /**
  * Render user role
@@ -138,6 +138,7 @@ const renderQuotaUsage = (text, record, t) => {
   const { Paragraph } = Typography;
   const used = parseInt(record.used_quota) || 0;
   const remain = parseInt(record.quota) || 0;
+  const giftQuota = parseInt(record.gift_quota) || 0;
   const total = used + remain;
   const percent = total > 0 ? (remain / total) * 100 : 0;
   const popoverContent = (
@@ -151,21 +152,32 @@ const renderQuotaUsage = (text, record, t) => {
       <Paragraph copyable={{ content: renderQuota(total) }}>
         {t('总额度')}: {renderQuota(total)}
       </Paragraph>
+      {giftQuota > 0 && (
+        <Paragraph copyable={{ content: renderQuota(giftQuota) }}>
+          {t('含赠送')}: {renderQuota(giftQuota)}
+        </Paragraph>
+      )}
     </div>
   );
   return (
     <Popover content={popoverContent} position='top'>
-      <Tag color='white' shape='circle'>
-        <div className='flex flex-col items-end'>
-          <span className='text-xs leading-none'>{`${renderQuota(remain)} / ${renderQuota(total)}`}</span>
+      <div className='flex flex-col items-start cursor-pointer'>
+        <span style={{ fontSize: '13px', lineHeight: 1.2 }}>{`${renderQuota(remain)} / ${renderQuota(total)}`}</span>
+        {giftQuota > 0 && (
+          <span className='text-gray-400' style={{ fontSize: '12px', lineHeight: 1.2 }}>
+            {t('含赠送')} {renderQuota(giftQuota)}
+          </span>
+        )}
+        <div style={{ width: '120px' }}>
           <Progress
             percent={percent}
             aria-label='quota usage'
-            format={() => `${percent.toFixed(0)}%`}
-            style={{ width: '100%', marginTop: '1px', marginBottom: 0 }}
+            showInfo={false}
+            size='small'
+            style={{ marginTop: '2px', marginBottom: 0 }}
           />
         </div>
-      </Tag>
+      </div>
     </Popover>
   );
 };
@@ -343,6 +355,20 @@ export const getUsersColumns = ({
       dataIndex: 'role',
       render: (text, record, index) => {
         return <div>{renderRole(text, t)}</div>;
+      },
+    },
+    {
+      title: t('创建时间'),
+      dataIndex: 'created_time',
+      render: (text) => {
+        return <div>{text ? timestamp2string(text) : '-'}</div>;
+      },
+    },
+    {
+      title: t('注册IP'),
+      dataIndex: 'register_ip',
+      render: (text) => {
+        return <div>{text || '-'}</div>;
       },
     },
     {

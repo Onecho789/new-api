@@ -74,6 +74,10 @@ var MemoryCacheEnabled bool
 
 var LogConsumeEnabled = true
 
+// LogModelDisplayMode controls how model names appear in API responses and logs.
+// 0 = normal (show upstream model name), 1 = hide upstream model, 2 = always show request model
+var LogModelDisplayMode = 0
+
 var TLSInsecureSkipVerify bool
 var InsecureTLSConfig = &tls.Config{InsecureSkipVerify: true}
 

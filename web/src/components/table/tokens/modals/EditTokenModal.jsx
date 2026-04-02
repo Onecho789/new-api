@@ -63,6 +63,7 @@ const EditTokenModal = (props) => {
   const [models, setModels] = useState([]);
   const [groups, setGroups] = useState([]);
   const isEdit = props.editingToken.id !== undefined;
+  const enableQuotaLimit = props.enableQuotaLimit === true;
 
   const getInitValues = () => ({
     name: '',
@@ -75,6 +76,9 @@ const EditTokenModal = (props) => {
     group: '',
     cross_group_retry: false,
     tokenCount: 1,
+    quota_limit_period: 'never',
+    quota_limit: 0,
+    quota_limit_custom_seconds: 0,
   });
 
   const handleCancel = () => {
@@ -151,9 +155,18 @@ const EditTokenModal = (props) => {
 
   const loadToken = async () => {
     setLoading(true);
-    let res = await API.get(`/api/token/${props.editingToken.id}`);
+    const isAdmin = props.isAdmin === true;
+    const tokenDetailUrl = isAdmin
+      ? `/api/admin/token/${props.editingToken.id}`
+      : `/api/token/${props.editingToken.id}`;
+    let res = await API.get(tokenDetailUrl);
     const { success, message, data } = res.data;
     if (success) {
+      console.log('[EditTokenModal] API returned data:', JSON.stringify({
+        quota_limit_period: data.quota_limit_period,
+        quota_limit: data.quota_limit,
+        quota_limit_custom_seconds: data.quota_limit_custom_seconds,
+      }));
       if (data.expired_time !== -1) {
         data.expired_time = timestamp2string(data.expired_time);
       }
@@ -163,7 +176,26 @@ const EditTokenModal = (props) => {
         data.model_limits = [];
       }
       if (formApiRef.current) {
-        formApiRef.current.setValues({ ...getInitValues(), ...data });
+        const merged = { ...getInitValues(), ...data };
+        console.log('[EditTokenModal] setValues merged:', JSON.stringify({
+          quota_limit_period: merged.quota_limit_period,
+          quota_limit: merged.quota_limit,
+          quota_limit_custom_seconds: merged.quota_limit_custom_seconds,
+        }));
+        formApiRef.current.setValues(merged);
+        // Semi UI conditionally rendered fields may re-init with initValues
+        // when they mount after setValues changes the condition.
+        // Re-set these values after the fields have mounted.
+        if (data.quota_limit_period && data.quota_limit_period !== 'never') {
+          setTimeout(() => {
+            if (formApiRef.current) {
+              formApiRef.current.setValue('quota_limit', data.quota_limit || 0);
+              if (data.quota_limit_period === 'custom') {
+                formApiRef.current.setValue('quota_limit_custom_seconds', data.quota_limit_custom_seconds || 0);
+              }
+            }
+          }, 0);
+        }
       }
     } else {
       showError(message);
@@ -210,6 +242,8 @@ const EditTokenModal = (props) => {
     if (isEdit) {
       let { tokenCount: _tc, ...localInputs } = values;
       localInputs.remain_quota = parseInt(localInputs.remain_quota);
+      localInputs.quota_limit = parseInt(localInputs.quota_limit) || 0;
+      localInputs.quota_limit_custom_seconds = parseInt(localInputs.quota_limit_custom_seconds) || 0;
       if (localInputs.expired_time !== -1) {
         let time = Date.parse(localInputs.expired_time);
         if (isNaN(time)) {
@@ -221,7 +255,8 @@ const EditTokenModal = (props) => {
       }
       localInputs.model_limits = localInputs.model_limits.join(',');
       localInputs.model_limits_enabled = localInputs.model_limits.length > 0;
-      let res = await API.put(`/api/token/`, {
+      const updateUrl = props.isAdmin ? '/api/admin/token/' : '/api/token/';
+      let res = await API.put(updateUrl, {
         ...localInputs,
         id: parseInt(props.editingToken.id),
       });
@@ -234,6 +269,11 @@ const EditTokenModal = (props) => {
         showError(t(message));
       }
     } else {
+      if (props.isAdmin) {
+        showError(t('管理员令牌管理不支持创建令牌'));
+        setLoading(false);
+        return;
+      }
       const count = parseInt(values.tokenCount, 10) || 1;
       let successCount = 0;
       for (let i = 0; i < count; i++) {
@@ -246,6 +286,8 @@ const EditTokenModal = (props) => {
           localInputs.name = baseName;
         }
         localInputs.remain_quota = parseInt(localInputs.remain_quota);
+        localInputs.quota_limit = parseInt(localInputs.quota_limit) || 0;
+        localInputs.quota_limit_custom_seconds = parseInt(localInputs.quota_limit_custom_seconds) || 0;
 
         if (localInputs.expired_time !== -1) {
           let time = Date.parse(localInputs.expired_time);
@@ -366,6 +408,7 @@ const EditTokenModal = (props) => {
                         placeholder={t('令牌分组，默认为用户的分组')}
                         optionList={groups}
                         renderOptionItem={renderGroupOption}
+                        rules={!isEdit ? [{ required: true, message: t('请选择令牌分组') }] : []}
                         showClear
                         style={{ width: '100%' }}
                       />
@@ -521,10 +564,59 @@ const EditTokenModal = (props) => {
                       )}
                     />
                   </Col>
+                  {enableQuotaLimit && (
+                    <>
+                      <Col span={24}>
+                        <Form.Select
+                          field='quota_limit_period'
+                          label={t('周期限额')}
+                          placeholder={t('选择限额周期')}
+                          extraText={t('设置令牌的周期性额度限制，到期自动重置')}
+                          style={{ width: '100%' }}
+                          optionList={[
+                            { value: 'never', label: t('不限制') },
+                            { value: 'daily', label: t('每日') },
+                            { value: 'weekly', label: t('每周') },
+                            { value: 'monthly', label: t('每月') },
+                            { value: 'custom', label: t('自定义') },
+                          ]}
+                        />
+                      </Col>
+                      {values.quota_limit_period && values.quota_limit_period !== 'never' && (
+                        <Col span={24}>
+                          <Form.AutoComplete
+                            field='quota_limit'
+                            label={t('周期限额额度')}
+                            placeholder={t('请输入周期限额')}
+                            type='number'
+                            rules={[{ required: true, message: t('请输入周期限额') }]}
+                            data={[
+                              { value: 500000, label: '1$' },
+                              { value: 5000000, label: '10$' },
+                              { value: 25000000, label: '50$' },
+                              { value: 50000000, label: '100$' },
+                              { value: 250000000, label: '500$' },
+                            ]}
+                            extraText={renderQuotaWithPrompt(values.quota_limit)}
+                          />
+                        </Col>
+                      )}
+                      {values.quota_limit_period === 'custom' && (
+                        <Col span={24}>
+                          <Form.InputNumber
+                            field='quota_limit_custom_seconds'
+                            label={t('自定义周期（秒）')}
+                            placeholder={t('请输入自定义周期秒数')}
+                            min={60}
+                            rules={[{ required: true, message: t('请输入自定义周期秒数') }]}
+                            style={{ width: '100%' }}
+                          />
+                        </Col>
+                      )}
+                    </>
+                  )}
                 </Row>
               </Card>
-
-              {/* 访问限制 */}
               <Card className='!rounded-2xl shadow-sm border-0'>
                 <div className='flex items-center mb-2'>
                   <Avatar

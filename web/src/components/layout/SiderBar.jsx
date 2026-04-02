@@ -49,6 +49,7 @@ const routerMap = {
   deployment: '/console/deployment',
   playground: '/console/playground',
   personal: '/console/personal',
+  admin_tokens: '/console/admin-tokens',
 };
 
 const SiderBar = ({ onNavigate = () => {} }) => {
@@ -181,6 +182,12 @@ const SiderBar = ({ onNavigate = () => {} }) => {
         text: t('用户管理'),
         itemKey: 'user',
         to: '/user',
+        className: isAdmin() ? '' : 'tableHiddle',
+      },
+      {
+        text: t('用户令牌管理'),
+        itemKey: 'admin_tokens',
+        to: '/console/admin-tokens',
         className: isAdmin() ? '' : 'tableHiddle',
       },
       {

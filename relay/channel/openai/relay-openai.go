@@ -37,6 +37,10 @@ func sendStreamData(c *gin.Context, info *relaycommon.RelayInfo, data string, fo
 	}
 
 	if !thinkToContent {
+		// 根据日志模型显示模式替换模型名
+		if lastStreamResponse.Model != "" {
+			lastStreamResponse.Model = info.GetResponseModelName()
+		}
 		return helper.ObjectData(c, lastStreamResponse)
 	}
 
@@ -111,7 +115,7 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 
 	defer service.CloseResponseBodyGracefully(resp)
 
-	model := info.UpstreamModelName
+	model := info.GetResponseModelName()
 	var responseId string
 	var createAt int64 = 0
 	var systemFingerprint string
@@ -240,6 +244,13 @@ func OpenaiHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Respo
 		forceFormat = true
 	}
 
+	responseModel := info.GetResponseModelName()
+	modelModified := false
+	if responseModel != "" && simpleResponse.Model != responseModel {
+		simpleResponse.Model = responseModel
+		modelModified = true
+	}
+
 	usageModified := false
 	if simpleResponse.Usage.PromptTokens == 0 {
 		completionTokens := simpleResponse.Usage.CompletionTokens
@@ -261,13 +272,18 @@ func OpenaiHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Respo
 
 	switch info.RelayFormat {
 	case types.RelayFormatOpenAI:
-		if usageModified {
+		if usageModified || modelModified {
 			var bodyMap map[string]interface{}
 			err = common.Unmarshal(responseBody, &bodyMap)
 			if err != nil {
 				return nil, types.NewOpenAIError(err, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
 			}
-			bodyMap["usage"] = simpleResponse.Usage
+			if modelModified {
+				bodyMap["model"] = simpleResponse.Model
+			}
+			if usageModified {
+				bodyMap["usage"] = simpleResponse.Usage
+			}
 			responseBody, _ = common.Marshal(bodyMap)
 		}
 		if forceFormat {

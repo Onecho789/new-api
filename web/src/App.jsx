@@ -148,6 +148,14 @@ function App() {
           }
         />
         <Route
+          path='/console/admin-tokens'
+          element={
+            <AdminRoute>
+              <Token isAdmin />
+            </AdminRoute>
+          }
+        />
+        <Route
           path='/console/playground'
           element={
             <PrivateRoute>

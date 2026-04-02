@@ -22,6 +22,7 @@ import { Button, Space } from '@douyinfe/semi-ui';
 import { showError } from '../../../helpers';
 import CopyTokensModal from './modals/CopyTokensModal';
 import DeleteTokensModal from './modals/DeleteTokensModal';
+import BatchUpdateTokensModal from './modals/BatchUpdateTokensModal';
 
 const TokensActions = ({
   selectedKeys,
@@ -29,11 +30,17 @@ const TokensActions = ({
   setShowEdit,
   batchCopyTokens,
   batchDeleteTokens,
+  batchUpdateTokens,
+  copyText,
+  allowCreate = true,
+  enableQuotaLimit = false,
   t,
 }) => {
   // Modal states
   const [showCopyModal, setShowCopyModal] = useState(false);
   const [showDeleteModal, setShowDeleteModal] = useState(false);
+  const [showBatchUpdateModal, setShowBatchUpdateModal] = useState(false);
+  const [batchUpdateLoading, setBatchUpdateLoading] = useState(false);
 
   // Handle copy selected tokens with options
   const handleCopySelectedTokens = () => {
@@ -53,6 +60,28 @@ const TokensActions = ({
     setShowDeleteModal(true);
   };
 
+  // Handle batch update selected tokens
+  const handleBatchUpdateTokens = () => {
+    if (selectedKeys.length === 0) {
+      showError(t('请至少选择一个令牌！'));
+      return;
+    }
+    setShowBatchUpdateModal(true);
+  };
+
+  // Handle batch update confirmation
+  const handleConfirmBatchUpdate = async (action, values) => {
+    setBatchUpdateLoading(true);
+    try {
+      const success = await batchUpdateTokens(action, values);
+      if (success) {
+        setShowBatchUpdateModal(false);
+      }
+    } finally {
+      setBatchUpdateLoading(false);
+    }
+  };
+
   // Handle delete confirmation
   const handleConfirmDelete = () => {
     batchDeleteTokens();
@@ -62,19 +91,21 @@ const TokensActions = ({
   return (
     <>
       <div className='flex flex-wrap gap-2 w-full md:w-auto order-2 md:order-1'>
-        <Button
-          type='primary'
-          className='flex-1 md:flex-initial'
-          onClick={() => {
-            setEditingToken({
-              id: undefined,
-            });
-            setShowEdit(true);
-          }}
-          size='small'
-        >
-          {t('添加令牌')}
-        </Button>
+        {allowCreate && (
+          <Button
+            type='primary'
+            className='flex-1 md:flex-initial'
+            onClick={() => {
+              setEditingToken({
+                id: undefined,
+              });
+              setShowEdit(true);
+            }}
+            size='small'
+          >
+            {t('添加令牌')}
+          </Button>
+        )}
 
         <Button
           type='tertiary'
@@ -84,6 +115,17 @@ const TokensActions = ({
         >
           {t('复制所选令牌')}
         </Button>
+
+        {batchUpdateTokens && (
+          <Button
+            type='secondary'
+            className='flex-1 md:flex-initial'
+            onClick={handleBatchUpdateTokens}
+            size='small'
+          >
+            {t('批量修改')}
+          </Button>
+        )}
 
         <Button
           type='danger'
@@ -98,7 +140,8 @@ const TokensActions = ({
       <CopyTokensModal
         visible={showCopyModal}
         onCancel={() => setShowCopyModal(false)}
-        batchCopyTokens={batchCopyTokens}
+        selectedKeys={selectedKeys}
+        copyText={copyText}
         t={t}
       />
 
@@ -109,6 +152,18 @@ const TokensActions = ({
         selectedKeys={selectedKeys}
         t={t}
       />
+
+      {batchUpdateTokens && (
+        <BatchUpdateTokensModal
+          visible={showBatchUpdateModal}
+          onCancel={() => setShowBatchUpdateModal(false)}
+          onConfirm={handleConfirmBatchUpdate}
+          selectedCount={selectedKeys.length}
+          loading={batchUpdateLoading}
+          enableQuotaLimit={enableQuotaLimit}
+          t={t}
+        />
+      )}
     </>
   );
 };

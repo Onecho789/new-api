@@ -45,7 +45,7 @@ func GenerateTextOtherInfo(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, m
 	if relayInfo.ReasoningEffort != "" {
 		other["reasoning_effort"] = relayInfo.ReasoningEffort
 	}
-	if relayInfo.IsModelMapped {
+	if relayInfo.IsModelMapped && common.LogModelDisplayMode == 0 {
 		other["is_model_mapped"] = true
 		other["upstream_model_name"] = relayInfo.UpstreamModelName
 	}

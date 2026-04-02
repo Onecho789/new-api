@@ -87,6 +87,7 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 
 	defer func() {
 		if newAPIError != nil {
+			translateRelayError(newAPIError)
 			logger.LogError(c, fmt.Sprintf("relay error: %s", newAPIError.Error()))
 			newAPIError.SetMessage(common.MessageWithRequestId(newAPIError.Error(), requestId))
 			switch relayFormat {
@@ -459,6 +460,34 @@ func RelayNotFound(c *gin.Context) {
 	c.JSON(http.StatusNotFound, gin.H{
 		"error": err,
 	})
+}
+
+// translateRelayError applies admin-configured error message replacement rules.
+// Matched messages are fully replaced (not partially substituted).
+func translateRelayError(newAPIError *types.NewAPIError) {
+	if newAPIError == nil {
+		return
+	}
+	switch e := newAPIError.RelayError.(type) {
+	case types.OpenAIError:
+		translated := operation_setting.TranslateErrorMessage(e.Message)
+		if translated != e.Message {
+			e.Message = translated
+			newAPIError.RelayError = e
+		}
+	case types.ClaudeError:
+		translated := operation_setting.TranslateErrorMessage(e.Message)
+		if translated != e.Message {
+			e.Message = translated
+			newAPIError.RelayError = e
+		}
+	}
+	if newAPIError.Err != nil {
+		translated := operation_setting.TranslateErrorMessage(newAPIError.Err.Error())
+		if translated != newAPIError.Err.Error() {
+			newAPIError.Err = fmt.Errorf("%s", translated)
+		}
+	}
 }
 
 func RelayTaskFetch(c *gin.Context) {

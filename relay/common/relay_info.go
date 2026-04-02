@@ -226,6 +226,24 @@ func (info *RelayInfo) InitChannelMeta(c *gin.Context) {
 	}
 }
 
+// GetResponseModelName returns the model name to use in API responses,
+// controlled by LogModelDisplayMode setting.
+func (info *RelayInfo) GetResponseModelName() string {
+	switch common.LogModelDisplayMode {
+	case 0:
+		// Normal: show upstream model name if mapped
+		if info.IsModelMapped && info.UpstreamModelName != "" {
+			return info.UpstreamModelName
+		}
+		return info.OriginModelName
+	case 1, 2:
+		// Always return the user-facing request model name
+		return info.OriginModelName
+	default:
+		return info.OriginModelName
+	}
+}
+
 func (info *RelayInfo) ToString() string {
 	if info == nil {
 		return "RelayInfo<nil>"

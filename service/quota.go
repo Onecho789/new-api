@@ -100,6 +100,14 @@ func PreWssConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, usag
 		return err
 	}
 
+	// Lazy reset periodic quota limit
+	now := common.GetTimestamp()
+	if token.MaybeResetQuotaLimit(now) {
+		if resetErr := model.PersistTokenQuotaLimitReset(token); resetErr != nil {
+			common.SysLog("failed to persist token quota limit reset: " + resetErr.Error())
+		}
+	}
+
 	modelName := relayInfo.OriginModelName
 	textInputTokens := usage.InputTokenDetails.TextTokens
 	textOutTokens := usage.OutputTokenDetails.TextTokens
@@ -140,6 +148,15 @@ func PreWssConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, usag
 
 	if userQuota < quota {
 		return fmt.Errorf("user quota is not enough, user quota: %s, need quota: %s", logger.FormatQuota(userQuota), logger.FormatQuota(quota))
+	}
+
+	// Check periodic quota limit
+	if token.IsQuotaLimitEnabled() {
+		remaining := token.QuotaLimitRemaining()
+		if remaining < quota {
+			return fmt.Errorf("token periodic quota limit exceeded, period remaining: %s, need: %s",
+				logger.FormatQuota(remaining), logger.FormatQuota(quota))
+		}
 	}
 
 	if !token.UnlimitedQuota && token.RemainQuota < quota {
@@ -353,6 +370,21 @@ func PreConsumeTokenQuota(relayInfo *relaycommon.RelayInfo, quota int) error {
 	token, err := model.GetTokenByKey(relayInfo.TokenKey, false)
 	if err != nil {
 		return err
+	}
+	// Lazy reset periodic quota limit
+	now := common.GetTimestamp()
+	if token.MaybeResetQuotaLimit(now) {
+		if resetErr := model.PersistTokenQuotaLimitReset(token); resetErr != nil {
+			common.SysLog("failed to persist token quota limit reset: " + resetErr.Error())
+		}
+	}
+	// Check periodic quota limit
+	if token.IsQuotaLimitEnabled() {
+		remaining := token.QuotaLimitRemaining()
+		if remaining < quota {
+			return fmt.Errorf("token periodic quota limit exceeded, period remaining: %s, need: %s",
+				logger.FormatQuota(remaining), logger.FormatQuota(quota))
+		}
 	}
 	if !relayInfo.TokenUnlimited && token.RemainQuota < quota {
 		return fmt.Errorf("token quota is not enough, token remain quota: %s, need quota: %s", logger.FormatQuota(token.RemainQuota), logger.FormatQuota(quota))

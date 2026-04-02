@@ -43,22 +43,31 @@ import { useTokensData } from '../../../hooks/tokens/useTokensData';
 import { useIsMobile } from '../../../hooks/common/useIsMobile';
 import { createCardProPagination } from '../../../helpers/utils';
 
-function TokensPage() {
+const adminTokenConfig = {
+  listEndpoint: '/api/admin/token/',
+  searchEndpoint: null,
+  updateEndpoint: '/api/admin/token/',
+  deleteEndpoint: (id) => `/api/admin/token/${id}`,
+  batchEndpoint: '/api/admin/token/batch',
+  statusOnlyUpdate: false,
+};
+
+function TokensPage({ isAdmin = false }) {
   // Define the function first, then pass it into the hook to avoid TDZ errors
   const openFluentNotificationRef = useRef(null);
   const openCCSwitchModalRef = useRef(null);
   const tokensData = useTokensData(
     (key) => openFluentNotificationRef.current?.(key),
-    (key) => openCCSwitchModalRef.current?.(key),
+    isAdmin ? adminTokenConfig : (key) => openCCSwitchModalRef.current?.(key),
   );
   const isMobile = useIsMobile();
+  const [enableQuotaLimit, setEnableQuotaLimit] = useState(isAdmin);
   const latestRef = useRef({
     tokens: [],
     selectedKeys: [],
     t: (k) => k,
     selectedModel: '',
     prefillKey: '',
-    fetchTokenKey: async () => '',
   });
   const [modelOptions, setModelOptions] = useState([]);
   const [selectedModel, setSelectedModel] = useState('');
@@ -75,7 +84,6 @@ function TokensPage() {
       t: tokensData.t,
       selectedModel,
       prefillKey,
-      fetchTokenKey: tokensData.fetchTokenKey,
     };
   }, [
     tokensData.tokens,
@@ -83,7 +91,6 @@ function TokensPage() {
     tokensData.t,
     selectedModel,
     prefillKey,
-    tokensData.fetchTokenKey,
   ]);
 
   const loadModels = async () => {
@@ -201,14 +208,13 @@ function TokensPage() {
   openCCSwitchModalRef.current = openCCSwitchModal;
 
   // Prefill to Fluent handler
-  const handlePrefillToFluent = async () => {
+  const handlePrefillToFluent = () => {
     const {
       tokens,
       selectedKeys,
       t,
       selectedModel: chosenModel,
       prefillKey: overrideKey,
-      fetchTokenKey,
     } = latestRef.current;
     const container = document.getElementById('fluent-new-api-container');
     if (!container) {
@@ -245,11 +251,7 @@ function TokensPage() {
         Toast.warning(t('没有可用令牌用于填充'));
         return;
       }
-      try {
-        apiKeyToUse = 'sk-' + (await fetchTokenKey(token));
-      } catch (_) {
-        return;
-      }
+      apiKeyToUse = 'sk-' + token.key;
     }
 
     const payload = {
@@ -291,6 +293,22 @@ function TokensPage() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [modelOptions, selectedModel, tokensData.t, fluentNoticeOpen]);
+
+  // Load user's enable_quota_limit permission (admin always has it)
+  useEffect(() => {
+    if (isAdmin) {
+      setEnableQuotaLimit(true);
+      return;
+    }
+    API.get('/api/user/self').then((res) => {
+      if (res.data.success) {
+        const data = res.data.data;
+        setEnableQuotaLimit(
+          data.role >= 10 || data.enable_quota_limit === true,
+        );
+      }
+    }).catch(() => {});
+  }, [isAdmin]);
 
   useEffect(() => {
     const selector = '#fluent-new-api-container';
@@ -359,13 +377,13 @@ function TokensPage() {
     setShowEdit,
     batchCopyTokens,
     batchDeleteTokens,
+    copyText,
 
     // Filters state
     formInitValues,
     setFormApi,
     searchTokens,
     loading,
-    searching,
 
     // Description state
     compactMode,
@@ -382,6 +400,8 @@ function TokensPage() {
         editingToken={editingToken}
         visiable={showEdit}
         handleClose={closeEdit}
+        isAdmin={isAdmin}
+        enableQuotaLimit={enableQuotaLimit}
       />
 
       <CCSwitchModal
@@ -408,6 +428,10 @@ function TokensPage() {
               setShowEdit={setShowEdit}
               batchCopyTokens={batchCopyTokens}
               batchDeleteTokens={batchDeleteTokens}
+              batchUpdateTokens={isAdmin ? undefined : tokensData.batchUpdateTokens}
+              copyText={copyText}
+              allowCreate={!isAdmin}
+              enableQuotaLimit={enableQuotaLimit}
               t={t}
             />
 
@@ -417,7 +441,7 @@ function TokensPage() {
                 setFormApi={setFormApi}
                 searchTokens={searchTokens}
                 loading={loading}
-                searching={searching}
+                isAdmin={isAdmin}
                 t={t}
               />
             </div>
@@ -434,7 +458,7 @@ function TokensPage() {
         })}
         t={tokensData.t}
       >
-        <TokensTable {...tokensData} />
+        <TokensTable {...tokensData} isAdmin={isAdmin} />
       </CardPro>
     </>
   );

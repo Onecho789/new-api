@@ -179,7 +179,7 @@ func handleLastResponse(lastStreamData string, responseId *string, createAt *int
 	*responseId = lastStreamResponse.Id
 	*createAt = lastStreamResponse.Created
 	*systemFingerprint = lastStreamResponse.GetSystemFingerprint()
-	*model = lastStreamResponse.Model
+	*model = info.GetResponseModelName()
 
 	if service.ValidUsage(lastStreamResponse.Usage) {
 		*containStreamUsage = true
@@ -253,9 +253,15 @@ func HandleFinalResponse(c *gin.Context, info *relaycommon.RelayInfo, lastStream
 	}
 }
 
-func sendResponsesStreamData(c *gin.Context, streamResponse dto.ResponsesStreamResponse, data string) {
+func sendResponsesStreamData(c *gin.Context, streamResponse dto.ResponsesStreamResponse, data string, responseModel string) {
 	if data == "" {
 		return
+	}
+	if streamResponse.Response != nil && responseModel != "" && streamResponse.Response.Model != responseModel {
+		streamResponse.Response.Model = responseModel
+		if jsonData, err := common.Marshal(streamResponse); err == nil {
+			data = string(jsonData)
+		}
 	}
 	helper.ResponseChunkData(c, streamResponse, data)
 }

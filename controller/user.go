@@ -175,6 +175,7 @@ func Register(c *gin.Context) {
 		DisplayName: user.Username,
 		InviterId:   inviterId,
 		Role:        common.RoleCommonUser, // 明确设置角色为普通用户
+		RegisterIP:  c.ClientIP(),
 	}
 	if common.EmailVerificationEnabled {
 		cleanUser.Email = user.Email
@@ -397,6 +398,7 @@ func GetSelf(c *gin.Context) {
 		"telegram_id":       user.TelegramId,
 		"group":             user.Group,
 		"quota":             user.Quota,
+		"gift_quota":        user.GiftQuota,
 		"used_quota":        user.UsedQuota,
 		"request_count":     user.RequestCount,
 		"aff_code":          user.AffCode,
@@ -407,6 +409,7 @@ func GetSelf(c *gin.Context) {
 		"linux_do_id":       user.LinuxDOId,
 		"setting":           user.Setting,
 		"stripe_customer":   user.StripeCustomer,
+		"enable_quota_limit": user.EnableQuotaLimit,
 		"sidebar_modules":   userSetting.SidebarModules, // 正确提取sidebar_modules字段
 		"permissions":       permissions,                // 新增权限字段
 	}
@@ -572,8 +575,12 @@ func UpdateUser(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
-	if originUser.Quota != updatedUser.Quota {
-		model.RecordLog(originUser.Id, model.LogTypeManage, fmt.Sprintf("管理员将用户额度从 %s修改为 %s", logger.LogQuota(originUser.Quota), logger.LogQuota(updatedUser.Quota)))
+	if originUser.Quota != updatedUser.Quota || originUser.GiftQuota != updatedUser.GiftQuota {
+		logMsg := fmt.Sprintf("管理员将用户额度从 %s修改为 %s", logger.LogQuota(originUser.Quota), logger.LogQuota(updatedUser.Quota))
+		if originUser.GiftQuota != updatedUser.GiftQuota {
+			logMsg += fmt.Sprintf("（赠送额度从 %s修改为 %s）", logger.LogQuota(originUser.GiftQuota), logger.LogQuota(updatedUser.GiftQuota))
+		}
+		model.RecordLog(originUser.Id, model.LogTypeManage, logMsg)
 	}
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
@@ -825,6 +832,7 @@ func CreateUser(c *gin.Context) {
 		Password:    user.Password,
 		DisplayName: user.DisplayName,
 		Role:        user.Role, // 保持管理员设置的角色
+		RegisterIP:  c.ClientIP(),
 	}
 	if err := cleanUser.Insert(0); err != nil {
 		common.ApiError(c, err)

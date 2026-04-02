@@ -37,6 +37,7 @@ type User struct {
 	VerificationCode string         `json:"verification_code" gorm:"-:all"`                                    // this field is only for Email verification, don't save it to database!
 	AccessToken      *string        `json:"access_token" gorm:"type:char(32);column:access_token;uniqueIndex"` // this token is for system management
 	Quota            int            `json:"quota" gorm:"type:int;default:0"`
+	GiftQuota        int            `json:"gift_quota" gorm:"type:int;default:0"` // accumulated gift quota from redemption codes (non-refundable)
 	UsedQuota        int            `json:"used_quota" gorm:"type:int;default:0;column:used_quota"` // used quota
 	RequestCount     int            `json:"request_count" gorm:"type:int;default:0;"`               // request number
 	Group            string         `json:"group" gorm:"type:varchar(64);default:'default'"`
@@ -45,11 +46,14 @@ type User struct {
 	AffQuota         int            `json:"aff_quota" gorm:"type:int;default:0;column:aff_quota"`           // 邀请剩余额度
 	AffHistoryQuota  int            `json:"aff_history_quota" gorm:"type:int;default:0;column:aff_history"` // 邀请历史额度
 	InviterId        int            `json:"inviter_id" gorm:"type:int;column:inviter_id;index"`
+	CreatedTime      int64          `json:"created_time" gorm:"bigint"`
+	RegisterIP       string         `json:"register_ip" gorm:"type:varchar(64);column:register_ip;default:''"`
 	DeletedAt        gorm.DeletedAt `gorm:"index"`
 	LinuxDOId        string         `json:"linux_do_id" gorm:"column:linux_do_id;index"`
 	Setting          string         `json:"setting" gorm:"type:text;column:setting"`
 	Remark           string         `json:"remark,omitempty" gorm:"type:varchar(255)" validate:"max=255"`
 	StripeCustomer   string         `json:"stripe_customer" gorm:"type:varchar(64);column:stripe_customer;index"`
+	EnableQuotaLimit bool           `json:"enable_quota_limit" gorm:"default:false"` // whether user can configure periodic quota limits on tokens
 }
 
 func (user *User) ToBaseUser() *UserBase {
@@ -387,6 +391,7 @@ func (user *User) Insert(inviterId int) error {
 	user.Quota = common.QuotaForNewUser
 	//user.SetAccessToken(common.GetUUID())
 	user.AffCode = common.GetRandomString(4)
+	user.CreatedTime = common.GetTimestamp()
 
 	// 初始化用户设置，包括默认的边栏配置
 	if user.Setting == "" {
@@ -445,6 +450,7 @@ func (user *User) InsertWithTx(tx *gorm.DB, inviterId int) error {
 	}
 	user.Quota = common.QuotaForNewUser
 	user.AffCode = common.GetRandomString(4)
+	user.CreatedTime = common.GetTimestamp()
 
 	// 初始化用户设置
 	if user.Setting == "" {
@@ -520,11 +526,13 @@ func (user *User) Edit(updatePassword bool) error {
 
 	newUser := *user
 	updates := map[string]interface{}{
-		"username":     newUser.Username,
-		"display_name": newUser.DisplayName,
-		"group":        newUser.Group,
-		"quota":        newUser.Quota,
-		"remark":       newUser.Remark,
+		"username":           newUser.Username,
+		"display_name":       newUser.DisplayName,
+		"group":              newUser.Group,
+		"quota":              newUser.Quota,
+		"gift_quota":         newUser.GiftQuota,
+		"remark":             newUser.Remark,
+		"enable_quota_limit": newUser.EnableQuotaLimit,
 	}
 	if updatePassword {
 		updates["password"] = newUser.Password
@@ -723,6 +731,21 @@ func IsAdmin(userId int) bool {
 		return false
 	}
 	return user.Role >= common.RoleAdminUser
+}
+
+// IsQuotaLimitAllowed checks if a user is allowed to configure periodic quota limits on tokens.
+// Admins always have this permission; regular users need enable_quota_limit = true.
+func IsQuotaLimitAllowed(userId int) bool {
+	if userId == 0 {
+		return false
+	}
+	var user User
+	err := DB.Where("id = ?", userId).Select("role, enable_quota_limit").Find(&user).Error
+	if err != nil {
+		common.SysLog("no such user " + err.Error())
+		return false
+	}
+	return user.Role >= common.RoleAdminUser || user.EnableQuotaLimit
 }
 
 //// IsUserEnabled checks user status from Redis first, falls back to DB if needed

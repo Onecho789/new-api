@@ -71,6 +71,7 @@ func OaiResponsesToChatHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 		chatResp.Usage = *usage
 	}
 
+	chatResp.Model = info.GetResponseModelName()
 	var responseBody []byte
 	switch info.RelayFormat {
 	case types.RelayFormatClaude:
@@ -99,7 +100,7 @@ func OaiResponsesToChatStreamHandler(c *gin.Context, info *relaycommon.RelayInfo
 
 	responseId := helper.GetResponseID(c)
 	createAt := time.Now().Unix()
-	model := info.UpstreamModelName
+	model := info.GetResponseModelName()
 
 	var (
 		usage       = &dto.Usage{}

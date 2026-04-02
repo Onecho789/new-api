@@ -28,6 +28,7 @@ import {
   IconStopwatchStroked,
   IconTypograph,
   IconSend,
+  IconGift,
 } from '@douyinfe/semi-icons';
 import { renderQuota } from '../../helpers';
 import { createSectionTitle } from '../../helpers/dashboard';
@@ -64,6 +65,18 @@ export const useDashboardStats = (
             trendData: [],
             trendColor: '#8b5cf6',
           },
+          ...(userState?.user?.gift_quota > 0
+            ? [
+                {
+                  title: t('累计赠送'),
+                  value: renderQuota(userState?.user?.gift_quota),
+                  icon: <IconGift />,
+                  avatarColor: 'pink',
+                  trendData: [],
+                  trendColor: '#ec4899',
+                },
+              ]
+            : []),
         ],
       },
       {
@@ -136,6 +149,7 @@ export const useDashboardStats = (
     [
       userState?.user?.quota,
       userState?.user?.used_quota,
+      userState?.user?.gift_quota,
       userState?.user?.request_count,
       times,
       consumeQuota,

@@ -39,6 +39,7 @@ export default function SettingsMonitoring(props) {
     AutomaticDisableChannelEnabled: false,
     AutomaticEnableChannelEnabled: false,
     AutomaticDisableKeywords: '',
+    ErrorMessageReplacements: '',
     AutomaticDisableStatusCodes: '401',
     AutomaticRetryStatusCodes:
       '100-199,300-399,401-407,409-499,500-503,505-523,525-599',
@@ -273,6 +274,18 @@ export default function SettingsMonitoring(props) {
                   autosize={{ minRows: 6, maxRows: 12 }}
                   onChange={(value) =>
                     setInputs({ ...inputs, AutomaticDisableKeywords: value })
+                  }
+                />
+                <Form.TextArea
+                  label={t('错误消息替换规则')}
+                  placeholder={t('一行一条规则，格式：关键词=>替换文本\n例如：rate limit=>请求频率过高，请稍后再试')}
+                  extraText={t(
+                    '当上游返回的错误消息中包含关键词时（不区分大小写），将整条错误消息替换为指定文本返回给用户',
+                  )}
+                  field={'ErrorMessageReplacements'}
+                  autosize={{ minRows: 6, maxRows: 12 }}
+                  onChange={(value) =>
+                    setInputs({ ...inputs, ErrorMessageReplacements: value })
                   }
                 />
               </Col>

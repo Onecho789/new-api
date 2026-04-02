@@ -40,6 +40,15 @@ func cacheDecrTokenQuota(key string, decrement int64) error {
 	return cacheIncrTokenQuota(key, -decrement)
 }
 
+func cacheIncrTokenQuotaLimitUsed(key string, increment int64) error {
+	key = common.GenerateHMAC(key)
+	return common.RedisHIncrBy(fmt.Sprintf("token:%s", key), constant.TokenFieldQuotaLimitUsed, increment)
+}
+
+func cacheDecrTokenQuotaLimitUsed(key string, decrement int64) error {
+	return cacheIncrTokenQuotaLimitUsed(key, -decrement)
+}
+
 func cacheSetTokenField(key string, field string, value string) error {
 	key = common.GenerateHMAC(key)
 	err := common.RedisHSetField(fmt.Sprintf("token:%s", key), field, value)

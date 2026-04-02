@@ -66,6 +66,9 @@ const EditUserModal = (props) => {
   const [addQuotaModalOpen, setIsModalOpen] = useState(false);
   const [addQuotaLocal, setAddQuotaLocal] = useState('');
   const [addAmountLocal, setAddAmountLocal] = useState('');
+  const [addGiftModalOpen, setAddGiftModalOpen] = useState(false);
+  const [addGiftQuotaLocal, setAddGiftQuotaLocal] = useState('');
+  const [addGiftAmountLocal, setAddGiftAmountLocal] = useState('');
   const isMobile = useIsMobile();
   const [groupOptions, setGroupOptions] = useState([]);
   const [bindingModalVisible, setBindingModalVisible] = useState(false);
@@ -85,8 +88,10 @@ const EditUserModal = (props) => {
     linux_do_id: '',
     email: '',
     quota: 0,
+    gift_quota: 0,
     group: 'default',
     remark: '',
+    enable_quota_limit: false,
   });
 
   const fetchGroups = async () => {
@@ -134,6 +139,8 @@ const EditUserModal = (props) => {
     let payload = { ...values };
     if (typeof payload.quota === 'string')
       payload.quota = parseInt(payload.quota) || 0;
+    if (typeof payload.gift_quota === 'string')
+      payload.gift_quota = parseInt(payload.gift_quota) || 0;
     if (userId) {
       payload.id = parseInt(userId);
     }
@@ -155,6 +162,14 @@ const EditUserModal = (props) => {
     const current = parseInt(formApiRef.current?.getValue('quota') || 0);
     const delta = parseInt(addQuotaLocal) || 0;
     formApiRef.current?.setValue('quota', current + delta);
+  };
+
+  const addLocalGiftQuota = () => {
+    const delta = parseInt(addGiftQuotaLocal) || 0;
+    const currentQuota = parseInt(formApiRef.current?.getValue('quota') || 0);
+    const currentGift = parseInt(formApiRef.current?.getValue('gift_quota') || 0);
+    formApiRef.current?.setValue('gift_quota', currentGift + delta);
+    formApiRef.current?.setValue('quota', currentQuota + delta);
   };
 
   /* --------------------------- UI --------------------------- */
@@ -323,6 +338,34 @@ const EditUserModal = (props) => {
                           />
                         </Form.Slot>
                       </Col>
+
+                      <Col span={24}>
+                        <Form.InputNumber
+                          field='gift_quota'
+                          label={t('赠送额度')}
+                          extraText={renderQuotaWithPrompt(values.gift_quota || 0)}
+                          style={{ width: '100%' }}
+                          readonly
+                          addonAfter={
+                            <Button
+                              icon={<IconPlus />}
+                              theme='light'
+                              onClick={() => setAddGiftModalOpen(true)}
+                            >
+                              {t('添加赠送额度')}
+                            </Button>
+                          }
+                        />
+                      </Col>
+
+                      <Col span={24}>
+                        <Form.Switch
+                          field='enable_quota_limit'
+                          label={t('允许配置周期限额')}
+                          size='default'
+                          extraText={t('开启后，该用户可以为令牌配置周期性额度限制')}
+                        />
+                      </Col>
                     </Row>
                   </Card>
                 )}
@@ -440,6 +483,88 @@ const EditUserModal = (props) => {
             onChange={(val) => {
               setAddQuotaLocal(val);
               setAddAmountLocal(
+                val != null && val !== ''
+                  ? Number(
+                      (
+                        quotaToDisplayAmount(Math.abs(val)) * Math.sign(val)
+                      ).toFixed(2),
+                    )
+                  : '',
+              );
+            }}
+            style={{ width: '100%' }}
+            showClear
+            step={500000}
+          />
+        </div>
+      </Modal>
+
+      {/* 添加赠送额度模态框 */}
+      <Modal
+        centered
+        visible={addGiftModalOpen}
+        onOk={() => {
+          addLocalGiftQuota();
+          setAddGiftModalOpen(false);
+          setAddGiftQuotaLocal('');
+          setAddGiftAmountLocal('');
+        }}
+        onCancel={() => {
+          setAddGiftModalOpen(false);
+        }}
+        closable={null}
+        title={
+          <div className='flex items-center'>
+            <IconPlus className='mr-2' />
+            {t('添加赠送额度')}
+          </div>
+        }
+      >
+        <div className='mb-4'>
+          {(() => {
+            const currentGift = formApiRef.current?.getValue('gift_quota') || 0;
+            return (
+              <Text type='secondary' className='block mb-2'>
+                {`${t('新赠送额度：')}${renderQuota(currentGift)} + ${renderQuota(addGiftQuotaLocal)} = ${renderQuota(currentGift + parseInt(addGiftQuotaLocal || 0))}`}
+              </Text>
+            );
+          })()}
+          <Text type='tertiary' size='small'>
+            {t('赠送额度不参与退款计算')}
+          </Text>
+        </div>
+        {getCurrencyConfig().type !== 'TOKENS' && (
+          <div className='mb-3'>
+            <div className='mb-1'>
+              <Text size='small'>{t('金额')}</Text>
+              <Text size='small' type='tertiary'> ({t('仅用于换算，实际保存的是额度')})</Text>
+            </div>
+            <InputNumber
+              prefix={getCurrencyConfig().symbol}
+              placeholder={t('输入金额')}
+              value={addGiftAmountLocal}
+              precision={2}
+              onChange={(val) => {
+                setAddGiftAmountLocal(val);
+                setAddGiftQuotaLocal(
+                  val != null && val !== '' ? displayAmountToQuota(Math.abs(val)) * Math.sign(val) : '',
+                );
+              }}
+              style={{ width: '100%' }}
+              showClear
+            />
+          </div>
+        )}
+        <div>
+          <div className='mb-1'>
+            <Text size='small'>{t('额度')}</Text>
+          </div>
+          <InputNumber
+            placeholder={t('输入额度')}
+            value={addGiftQuotaLocal}
+            onChange={(val) => {
+              setAddGiftQuotaLocal(val);
+              setAddGiftAmountLocal(
                 val != null && val !== ''
                   ? Number(
                       (

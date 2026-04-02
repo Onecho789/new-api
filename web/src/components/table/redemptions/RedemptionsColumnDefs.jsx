@@ -107,12 +107,20 @@ export const getRedemptionsColumns = ({
     {
       title: t('额度'),
       dataIndex: 'quota',
-      render: (text) => {
+      render: (text, record) => {
+        const quota = parseInt(text) || 0;
+        const giftQuota = parseInt(record.gift_quota) || 0;
+        const total = quota + giftQuota;
         return (
           <div>
             <Tag color='grey' shape='circle'>
-              {renderQuota(parseInt(text))}
+              {renderQuota(total)}
             </Tag>
+            {giftQuota > 0 && (
+              <div className='text-xs text-gray-400 mt-1'>
+                {t('含赠送')} {renderQuota(giftQuota)}
+              </div>
+            )}
           </div>
         );
       },

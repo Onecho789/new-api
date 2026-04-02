@@ -20,10 +20,10 @@ For commercial licensing, please contact support@quantumnous.com
 import React from 'react';
 import TokensTable from '../../components/table/tokens';
 
-const Token = () => {
+const Token = ({ isAdmin }) => {
   return (
     <div className='mt-[60px] px-2'>
-      <TokensTable />
+      <TokensTable isAdmin={isAdmin} />
     </div>
   );
 };

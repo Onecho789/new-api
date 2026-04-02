@@ -12,6 +12,14 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+type AddRedemptionRequest struct {
+	Name        string `json:"name"`
+	Quota       int    `json:"quota"`
+	GiftQuota   int    `json:"gift_quota"`
+	Count       int    `json:"count"`
+	ExpiredTime int64  `json:"expired_time"`
+}
+
 func GetAllRedemptions(c *gin.Context) {
 	pageInfo := common.GetPageQuery(c)
 	redemptions, total, err := model.GetAllRedemptions(pageInfo.GetStartIdx(), pageInfo.GetPageSize())
@@ -59,38 +67,42 @@ func GetRedemption(c *gin.Context) {
 }
 
 func AddRedemption(c *gin.Context) {
-	redemption := model.Redemption{}
-	err := c.ShouldBindJSON(&redemption)
+	var req AddRedemptionRequest
+	err := c.ShouldBindJSON(&req)
 	if err != nil {
 		common.ApiError(c, err)
 		return
 	}
-	if utf8.RuneCountInString(redemption.Name) == 0 || utf8.RuneCountInString(redemption.Name) > 20 {
+	if utf8.RuneCountInString(req.Name) == 0 || utf8.RuneCountInString(req.Name) > 20 {
 		common.ApiErrorI18n(c, i18n.MsgRedemptionNameLength)
 		return
 	}
-	if redemption.Count <= 0 {
+	if req.Count <= 0 {
 		common.ApiErrorI18n(c, i18n.MsgRedemptionCountPositive)
 		return
 	}
-	if redemption.Count > 100 {
+	if req.Count > 100 {
 		common.ApiErrorI18n(c, i18n.MsgRedemptionCountMax)
 		return
 	}
-	if valid, msg := validateExpiredTime(c, redemption.ExpiredTime); !valid {
+	if valid, msg := validateExpiredTime(c, req.ExpiredTime); !valid {
 		c.JSON(http.StatusOK, gin.H{"success": false, "message": msg})
 		return
 	}
+	if req.GiftQuota < 0 {
+		req.GiftQuota = 0
+	}
 	var keys []string
-	for i := 0; i < redemption.Count; i++ {
+	for i := 0; i < req.Count; i++ {
 		key := common.GetUUID()
 		cleanRedemption := model.Redemption{
 			UserId:      c.GetInt("id"),
-			Name:        redemption.Name,
+			Name:        req.Name,
 			Key:         key,
 			CreatedTime: common.GetTimestamp(),
-			Quota:       redemption.Quota,
-			ExpiredTime: redemption.ExpiredTime,
+			Quota:       req.Quota,
+			GiftQuota:   req.GiftQuota,
+			ExpiredTime: req.ExpiredTime,
 		}
 		err = cleanRedemption.Insert()
 		if err != nil {
@@ -147,6 +159,7 @@ func UpdateRedemption(c *gin.Context) {
 		// If you add more fields, please also update redemption.Update()
 		cleanRedemption.Name = redemption.Name
 		cleanRedemption.Quota = redemption.Quota
+		cleanRedemption.GiftQuota = redemption.GiftQuota
 		cleanRedemption.ExpiredTime = redemption.ExpiredTime
 	}
 	if statusOnly != "" {
