@@ -83,10 +83,12 @@ func GenerateTextOtherInfo(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, m
 	if relayInfo.ReasoningEffort != "" {
 		other["reasoning_effort"] = relayInfo.ReasoningEffort
 	}
-	if relayInfo.IsModelMapped {
-		other["is_model_mapped"] = true
-		other["upstream_model_name"] = relayInfo.UpstreamModelName
-	}
+	// CUSTOM: 隐藏实际上游模型，日志中不再写入真实的 upstream_model_name，仅保留请求模型。
+	// 原始逻辑如下，如需恢复上游默认行为直接取消注释即可：
+	// if relayInfo.IsModelMapped {
+	// 	other["is_model_mapped"] = true
+	// 	other["upstream_model_name"] = relayInfo.UpstreamModelName
+	// }
 
 	isSystemPromptOverwritten := common.GetContextKeyBool(ctx, constant.ContextKeySystemPromptOverride)
 	if isSystemPromptOverwritten {

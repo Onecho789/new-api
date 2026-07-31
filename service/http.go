@@ -46,6 +46,9 @@ func IOCopyBytesGracefully(c *gin.Context, src *http.Response, data []byte) {
 		return
 	}
 
+	// CUSTOM: 隐藏实际上游模型 —— 非流式响应统一出口，替换响应体中的真实上游模型名。
+	data = common.MaskUpstreamModelInData(c, data)
+
 	body := io.NopCloser(bytes.NewBuffer(data))
 
 	// We shouldn't set the header before we parse the response body, because the parse part may fail.

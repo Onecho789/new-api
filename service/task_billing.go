@@ -47,10 +47,12 @@ func LogTaskConsumption(c *gin.Context, info *relaycommon.RelayInfo) {
 	if info.PriceData.GroupRatioInfo.HasSpecialRatio {
 		other["user_group_ratio"] = info.PriceData.GroupRatioInfo.GroupSpecialRatio
 	}
-	if info.IsModelMapped {
-		other["is_model_mapped"] = true
-		other["upstream_model_name"] = info.UpstreamModelName
-	}
+	// CUSTOM: 隐藏实际上游模型（任务类日志-实时），不再写入真实的 upstream_model_name，仅保留请求模型。
+	// 原始逻辑如下，如需恢复上游默认行为直接取消注释即可：
+	// if info.IsModelMapped {
+	// 	other["is_model_mapped"] = true
+	// 	other["upstream_model_name"] = info.UpstreamModelName
+	// }
 	attachQuotaSaturation(c, info, other)
 	model.RecordConsumeLog(c, info.UserId, model.RecordConsumeLogParams{
 		ChannelId: info.ChannelId,
@@ -133,11 +135,13 @@ func taskBillingOther(task *model.Task) map[string]interface{} {
 			}
 		}
 	}
-	props := task.Properties
-	if props.UpstreamModelName != "" && props.UpstreamModelName != props.OriginModelName {
-		other["is_model_mapped"] = true
-		other["upstream_model_name"] = props.UpstreamModelName
-	}
+	// CUSTOM: 隐藏实际上游模型（任务类日志-异步回填），不再写入真实的 upstream_model_name，仅保留请求模型。
+	// 原始逻辑如下，如需恢复上游默认行为直接取消注释即可：
+	// props := task.Properties
+	// if props.UpstreamModelName != "" && props.UpstreamModelName != props.OriginModelName {
+	// 	other["is_model_mapped"] = true
+	// 	other["upstream_model_name"] = props.UpstreamModelName
+	// }
 	return other
 }
 

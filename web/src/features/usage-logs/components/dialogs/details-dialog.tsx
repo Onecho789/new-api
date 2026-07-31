@@ -83,6 +83,11 @@ import {
 } from '../../lib/utils'
 import { USAGE_BILLING_PATH, type LogOtherData } from '../../types'
 
+// CUSTOM: 隐藏实际上游模型 —— 控制详情弹窗「模型映射」区块是否渲染。
+// 置为 false 时该区块永不渲染，历史旧日志（数据库中仍含 upstream_model_name）也不会展示真实上游模型。
+// 如需恢复上游默认行为，把此常量改为 true 即可。
+const SHOW_MODEL_MAPPING_SECTION: boolean = false
+
 // Maps a channel-update changed-field token (as recorded by the backend audit)
 // to its i18n label key for display in the audit details.
 const CHANNEL_FIELD_LABELS: Record<string, string> = {
@@ -1044,20 +1049,24 @@ export function DetailsDialog(props: DetailsDialogProps) {
         )}
 
         {/* Model mapping */}
-        {other?.is_model_mapped && other?.upstream_model_name && (
-          <DetailSection label={t('Model Mapping')}>
-            <DetailRow
-              label={t('Request Model')}
-              value={props.log.model_name}
-              mono
-            />
-            <DetailRow
-              label={t('Actual Model')}
-              value={other.upstream_model_name}
-              mono
-            />
-          </DetailSection>
-        )}
+        {/* CUSTOM: 由 SHOW_MODEL_MAPPING_SECTION 开关控制，默认关闭以隐藏真实上游模型。
+            原始条件为 other?.is_model_mapped && other?.upstream_model_name */}
+        {SHOW_MODEL_MAPPING_SECTION &&
+          other?.is_model_mapped &&
+          other?.upstream_model_name && (
+            <DetailSection label={t('Model Mapping')}>
+              <DetailRow
+                label={t('Request Model')}
+                value={props.log.model_name}
+                mono
+              />
+              <DetailRow
+                label={t('Actual Model')}
+                value={other.upstream_model_name}
+                mono
+              />
+            </DetailSection>
+          )}
 
         {/* Token breakdown (for consume/error types with token data) */}
         {isDisplayableType(props.log.type) && other && (

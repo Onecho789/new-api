@@ -211,6 +211,11 @@ export function getResponseTimeColor(
   return getThroughputColor(completionTokens / seconds)
 }
 
+// CUSTOM: 隐藏实际上游模型 —— 控制是否对外派生 actualModel（列表模型徽章 Popover）。
+// 置为 false 时，历史旧日志即使仍含 upstream_model_name 也不会展示真实上游模型。
+// 如需恢复上游默认行为，把此常量改为 true 即可。
+const EXPOSE_UPSTREAM_MODEL_NAME: boolean = false
+
 /**
  * Format model name with mapping indicator
  */
@@ -220,16 +225,18 @@ export function formatModelName(log: UsageLog): {
   actualModel?: string
 } {
   const other = parseLogOther(log.other)
-  const isMapped = !!(
-    other?.is_model_mapped &&
-    other?.upstream_model_name &&
-    other.upstream_model_name !== ''
-  )
+  const isMapped =
+    EXPOSE_UPSTREAM_MODEL_NAME &&
+    !!(
+      other?.is_model_mapped &&
+      other?.upstream_model_name &&
+      other.upstream_model_name !== ''
+    )
 
   return {
     name: log.model_name,
     isMapped,
-    actualModel: isMapped ? other.upstream_model_name : undefined,
+    actualModel: isMapped ? other?.upstream_model_name : undefined,
   }
 }
 

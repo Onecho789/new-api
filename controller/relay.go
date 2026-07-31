@@ -403,7 +403,10 @@ func processChannelError(c *gin.Context, channelError types.ChannelError, err *t
 			startTime = time.Now()
 		}
 		useTimeSeconds := int(time.Since(startTime).Seconds())
-		model.RecordErrorLog(c, userId, channelId, modelName, tokenName, err.MaskSensitiveErrorWithStatusCode(), tokenId, useTimeSeconds, common.GetContextKeyBool(c, constant.ContextKeyIsStream), userGroup, other)
+		// CUSTOM: 隐藏实际上游模型 —— 报错文本中可能含有映射后的实际模型名（例如上游返回 "model xxx not found"），
+		// 这里将其替换回用户请求的模型名，保证报错日志也只暴露请求模型。
+		errContent := customMaskUpstreamModelInText(c, modelName, err.MaskSensitiveErrorWithStatusCode())
+		model.RecordErrorLog(c, userId, channelId, modelName, tokenName, errContent, tokenId, useTimeSeconds, common.GetContextKeyBool(c, constant.ContextKeyIsStream), userGroup, other)
 	}
 
 }
@@ -660,4 +663,40 @@ func shouldRetryTaskRelay(c *gin.Context, channelId int, taskErr *taskdto.TaskEr
 		return false
 	}
 	return true
+}
+
+// CUSTOM: customMaskUpstreamModelInText 将报错文本中出现的“实际上游模型名”替换为用户请求的模型名。
+// 场景：请求模型经渠道 model_mapping 映射为上游模型后，若上游报错并在错误消息里带上上游模型名，
+// 该真实模型名会通过错误日志的 content 字段泄露。这里根据渠道映射表反查出 requestModel 对应的
+// 上游模型名（含链式映射），逐一替换回 requestModel，确保报错日志同样只暴露请求模型。
+// 若无映射或解析失败，则原样返回，不影响正常报错内容。
+func customMaskUpstreamModelInText(c *gin.Context, requestModel string, text string) string {
+	if text == "" || requestModel == "" {
+		return text
+	}
+	modelMapping := common.GetContextKeyString(c, constant.ContextKeyChannelModelMapping)
+	if modelMapping == "" || modelMapping == "{}" {
+		return text
+	}
+	modelMap := make(map[string]string)
+	if err := common.UnmarshalJsonStr(modelMapping, &modelMap); err != nil {
+		return text
+	}
+	// 沿映射链收集 requestModel 对应的所有上游模型名（带循环保护）。
+	current := requestModel
+	visited := map[string]bool{current: true}
+	for {
+		mapped, ok := modelMap[current]
+		if !ok || mapped == "" || visited[mapped] {
+			break
+		}
+		visited[mapped] = true
+		current = mapped
+	}
+	for upstreamModel := range visited {
+		if upstreamModel != "" && upstreamModel != requestModel {
+			text = strings.ReplaceAll(text, upstreamModel, requestModel)
+		}
+	}
+	return text
 }

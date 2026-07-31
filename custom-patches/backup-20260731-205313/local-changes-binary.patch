@@ -1,0 +1,281 @@
+diff --git a/controller/relay.go b/controller/relay.go
+index 7e427086..2a200f26 100644
+--- a/controller/relay.go
++++ b/controller/relay.go
+@@ -403,7 +403,10 @@ func processChannelError(c *gin.Context, channelError types.ChannelError, err *t
+ 			startTime = time.Now()
+ 		}
+ 		useTimeSeconds := int(time.Since(startTime).Seconds())
+-		model.RecordErrorLog(c, userId, channelId, modelName, tokenName, err.MaskSensitiveErrorWithStatusCode(), tokenId, useTimeSeconds, common.GetContextKeyBool(c, constant.ContextKeyIsStream), userGroup, other)
++		// CUSTOM: 隐藏实际上游模型 —— 报错文本中可能含有映射后的实际模型名（例如上游返回 "model xxx not found"），
++		// 这里将其替换回用户请求的模型名，保证报错日志也只暴露请求模型。
++		errContent := customMaskUpstreamModelInText(c, modelName, err.MaskSensitiveErrorWithStatusCode())
++		model.RecordErrorLog(c, userId, channelId, modelName, tokenName, errContent, tokenId, useTimeSeconds, common.GetContextKeyBool(c, constant.ContextKeyIsStream), userGroup, other)
+ 	}
+ 
+ }
+@@ -661,3 +664,39 @@ func shouldRetryTaskRelay(c *gin.Context, channelId int, taskErr *taskdto.TaskEr
+ 	}
+ 	return true
+ }
++
++// CUSTOM: customMaskUpstreamModelInText 将报错文本中出现的“实际上游模型名”替换为用户请求的模型名。
++// 场景：请求模型经渠道 model_mapping 映射为上游模型后，若上游报错并在错误消息里带上上游模型名，
++// 该真实模型名会通过错误日志的 content 字段泄露。这里根据渠道映射表反查出 requestModel 对应的
++// 上游模型名（含链式映射），逐一替换回 requestModel，确保报错日志同样只暴露请求模型。
++// 若无映射或解析失败，则原样返回，不影响正常报错内容。
++func customMaskUpstreamModelInText(c *gin.Context, requestModel string, text string) string {
++	if text == "" || requestModel == "" {
++		return text
++	}
++	modelMapping := common.GetContextKeyString(c, constant.ContextKeyChannelModelMapping)
++	if modelMapping == "" || modelMapping == "{}" {
++		return text
++	}
++	modelMap := make(map[string]string)
++	if err := common.UnmarshalJsonStr(modelMapping, &modelMap); err != nil {
++		return text
++	}
++	// 沿映射链收集 requestModel 对应的所有上游模型名（带循环保护）。
++	current := requestModel
++	visited := map[string]bool{current: true}
++	for {
++		mapped, ok := modelMap[current]
++		if !ok || mapped == "" || visited[mapped] {
++			break
++		}
++		visited[mapped] = true
++		current = mapped
++	}
++	for upstreamModel := range visited {
++		if upstreamModel != "" && upstreamModel != requestModel {
++			text = strings.ReplaceAll(text, upstreamModel, requestModel)
++		}
++	}
++	return text
++}
+diff --git a/relay/channel/openai/constant.go b/relay/channel/openai/constant.go
+index 6bf2cac1..31a3515f 100644
+--- a/relay/channel/openai/constant.go
++++ b/relay/channel/openai/constant.go
+@@ -67,7 +67,7 @@ var ModelList = []string{
+ 	"text-davinci-edit-001",
+ 	"davinci-002", "babbage-002",
+ 	"dall-e-2", "dall-e-3",
+-	"gpt-image-1", "gpt-image-1-mini", "gpt-image-1.5",
++	"gpt-image-1", "gpt-image-1-mini", "gpt-image-1.5", "gpt-image-2",
+ 	"chatgpt-image-latest",
+ 	"whisper-1",
+ 	"tts-1", "tts-1-1106", "tts-1-hd", "tts-1-hd-1106",
+diff --git a/relay/helper/common.go b/relay/helper/common.go
+index fa363569..2a2efc2c 100644
+--- a/relay/helper/common.go
++++ b/relay/helper/common.go
+@@ -67,6 +67,8 @@ func ClaudeData(c *gin.Context, resp dto.ClaudeResponse) error {
+ 	if err != nil {
+ 		common.SysError("error marshalling stream response: " + err.Error())
+ 	} else {
++		// CUSTOM: 隐藏实际上游模型 —— 替换 Claude 流式数据中的真实上游模型名。
++		jsonData = common.MaskUpstreamModelInData(c, jsonData)
+ 		c.Render(-1, common.CustomEvent{Data: fmt.Sprintf("event: %s\n", resp.Type)})
+ 		c.Render(-1, common.CustomEvent{Data: "data: " + string(jsonData)})
+ 	}
+@@ -79,6 +81,8 @@ func ClaudeChunkData(c *gin.Context, resp dto.ClaudeResponse, data string) {
+ 		return
+ 	}
+ 
++	// CUSTOM: 隐藏实际上游模型 —— 替换 Claude 流式透传 chunk 中的真实上游模型名。
++	data = string(common.MaskUpstreamModelInData(c, []byte(data)))
+ 	c.Render(-1, common.CustomEvent{Data: fmt.Sprintf("event: %s\n", resp.Type)})
+ 	c.Render(-1, common.CustomEvent{Data: fmt.Sprintf("data: %s\n", data)})
+ 	_ = FlushWriter(c)
+@@ -89,6 +93,8 @@ func ResponseChunkData(c *gin.Context, resp dto.ResponsesStreamResponse, data st
+ 		return fmt.Errorf("request context done: %w", c.Request.Context().Err())
+ 	}
+ 
++	// CUSTOM: 隐藏实际上游模型 —— 替换 Responses API 流式 chunk 中的真实上游模型名。
++	data = string(common.MaskUpstreamModelInData(c, []byte(data)))
+ 	c.Render(-1, common.CustomEvent{Data: fmt.Sprintf("event: %s\n", resp.Type)})
+ 	c.Render(-1, common.CustomEvent{Data: fmt.Sprintf("data: %s", data)})
+ 	return FlushWriter(c)
+@@ -103,6 +109,9 @@ func StringData(c *gin.Context, str string) error {
+ 		return fmt.Errorf("request context done: %w", c.Request.Context().Err())
+ 	}
+ 
++	// CUSTOM: 隐藏实际上游模型 —— 流式响应统一出口（含 OpenAI/Gemini 透传与 ObjectData 序列化对象），
++	// 替换数据中的真实上游模型名。
++	str = string(common.MaskUpstreamModelInData(c, []byte(str)))
+ 	c.Render(-1, common.CustomEvent{Data: "data: " + str})
+ 	return FlushWriter(c)
+ }
+diff --git a/service/http.go b/service/http.go
+index d9818cfe..6d7470a7 100644
+--- a/service/http.go
++++ b/service/http.go
+@@ -46,6 +46,9 @@ func IOCopyBytesGracefully(c *gin.Context, src *http.Response, data []byte) {
+ 		return
+ 	}
+ 
++	// CUSTOM: 隐藏实际上游模型 —— 非流式响应统一出口，替换响应体中的真实上游模型名。
++	data = common.MaskUpstreamModelInData(c, data)
++
+ 	body := io.NopCloser(bytes.NewBuffer(data))
+ 
+ 	// We shouldn't set the header before we parse the response body, because the parse part may fail.
+diff --git a/service/log_info_generate.go b/service/log_info_generate.go
+index e510ec02..f0f1b3c9 100644
+--- a/service/log_info_generate.go
++++ b/service/log_info_generate.go
+@@ -83,10 +83,12 @@ func GenerateTextOtherInfo(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, m
+ 	if relayInfo.ReasoningEffort != "" {
+ 		other["reasoning_effort"] = relayInfo.ReasoningEffort
+ 	}
+-	if relayInfo.IsModelMapped {
+-		other["is_model_mapped"] = true
+-		other["upstream_model_name"] = relayInfo.UpstreamModelName
+-	}
++	// CUSTOM: 隐藏实际上游模型，日志中不再写入真实的 upstream_model_name，仅保留请求模型。
++	// 原始逻辑如下，如需恢复上游默认行为直接取消注释即可：
++	// if relayInfo.IsModelMapped {
++	// 	other["is_model_mapped"] = true
++	// 	other["upstream_model_name"] = relayInfo.UpstreamModelName
++	// }
+ 
+ 	isSystemPromptOverwritten := common.GetContextKeyBool(ctx, constant.ContextKeySystemPromptOverride)
+ 	if isSystemPromptOverwritten {
+diff --git a/service/task_billing.go b/service/task_billing.go
+index b677cb62..dd92bd92 100644
+--- a/service/task_billing.go
++++ b/service/task_billing.go
+@@ -47,10 +47,12 @@ func LogTaskConsumption(c *gin.Context, info *relaycommon.RelayInfo) {
+ 	if info.PriceData.GroupRatioInfo.HasSpecialRatio {
+ 		other["user_group_ratio"] = info.PriceData.GroupRatioInfo.GroupSpecialRatio
+ 	}
+-	if info.IsModelMapped {
+-		other["is_model_mapped"] = true
+-		other["upstream_model_name"] = info.UpstreamModelName
+-	}
++	// CUSTOM: 隐藏实际上游模型（任务类日志-实时），不再写入真实的 upstream_model_name，仅保留请求模型。
++	// 原始逻辑如下，如需恢复上游默认行为直接取消注释即可：
++	// if info.IsModelMapped {
++	// 	other["is_model_mapped"] = true
++	// 	other["upstream_model_name"] = info.UpstreamModelName
++	// }
+ 	attachQuotaSaturation(c, info, other)
+ 	model.RecordConsumeLog(c, info.UserId, model.RecordConsumeLogParams{
+ 		ChannelId: info.ChannelId,
+@@ -133,11 +135,13 @@ func taskBillingOther(task *model.Task) map[string]interface{} {
+ 			}
+ 		}
+ 	}
+-	props := task.Properties
+-	if props.UpstreamModelName != "" && props.UpstreamModelName != props.OriginModelName {
+-		other["is_model_mapped"] = true
+-		other["upstream_model_name"] = props.UpstreamModelName
+-	}
++	// CUSTOM: 隐藏实际上游模型（任务类日志-异步回填），不再写入真实的 upstream_model_name，仅保留请求模型。
++	// 原始逻辑如下，如需恢复上游默认行为直接取消注释即可：
++	// props := task.Properties
++	// if props.UpstreamModelName != "" && props.UpstreamModelName != props.OriginModelName {
++	// 	other["is_model_mapped"] = true
++	// 	other["upstream_model_name"] = props.UpstreamModelName
++	// }
+ 	return other
+ }
+ 
+diff --git a/web/src/features/usage-logs/components/dialogs/details-dialog.tsx b/web/src/features/usage-logs/components/dialogs/details-dialog.tsx
+index 8f57ac6b..6addc5ad 100644
+--- a/web/src/features/usage-logs/components/dialogs/details-dialog.tsx
++++ b/web/src/features/usage-logs/components/dialogs/details-dialog.tsx
+@@ -83,6 +83,11 @@ import {
+ } from '../../lib/utils'
+ import { USAGE_BILLING_PATH, type LogOtherData } from '../../types'
+ 
++// CUSTOM: 隐藏实际上游模型 —— 控制详情弹窗「模型映射」区块是否渲染。
++// 置为 false 时该区块永不渲染，历史旧日志（数据库中仍含 upstream_model_name）也不会展示真实上游模型。
++// 如需恢复上游默认行为，把此常量改为 true 即可。
++const SHOW_MODEL_MAPPING_SECTION: boolean = false
++
+ // Maps a channel-update changed-field token (as recorded by the backend audit)
+ // to its i18n label key for display in the audit details.
+ const CHANNEL_FIELD_LABELS: Record<string, string> = {
+@@ -1044,20 +1049,24 @@ export function DetailsDialog(props: DetailsDialogProps) {
+         )}
+ 
+         {/* Model mapping */}
+-        {other?.is_model_mapped && other?.upstream_model_name && (
+-          <DetailSection label={t('Model Mapping')}>
+-            <DetailRow
+-              label={t('Request Model')}
+-              value={props.log.model_name}
+-              mono
+-            />
+-            <DetailRow
+-              label={t('Actual Model')}
+-              value={other.upstream_model_name}
+-              mono
+-            />
+-          </DetailSection>
+-        )}
++        {/* CUSTOM: 由 SHOW_MODEL_MAPPING_SECTION 开关控制，默认关闭以隐藏真实上游模型。
++            原始条件为 other?.is_model_mapped && other?.upstream_model_name */}
++        {SHOW_MODEL_MAPPING_SECTION &&
++          other?.is_model_mapped &&
++          other?.upstream_model_name && (
++            <DetailSection label={t('Model Mapping')}>
++              <DetailRow
++                label={t('Request Model')}
++                value={props.log.model_name}
++                mono
++              />
++              <DetailRow
++                label={t('Actual Model')}
++                value={other.upstream_model_name}
++                mono
++              />
++            </DetailSection>
++          )}
+ 
+         {/* Token breakdown (for consume/error types with token data) */}
+         {isDisplayableType(props.log.type) && other && (
+diff --git a/web/src/features/usage-logs/lib/format.ts b/web/src/features/usage-logs/lib/format.ts
+index c2d64887..4efcfc45 100644
+--- a/web/src/features/usage-logs/lib/format.ts
++++ b/web/src/features/usage-logs/lib/format.ts
+@@ -211,6 +211,11 @@ export function getResponseTimeColor(
+   return getThroughputColor(completionTokens / seconds)
+ }
+ 
++// CUSTOM: 隐藏实际上游模型 —— 控制是否对外派生 actualModel（列表模型徽章 Popover）。
++// 置为 false 时，历史旧日志即使仍含 upstream_model_name 也不会展示真实上游模型。
++// 如需恢复上游默认行为，把此常量改为 true 即可。
++const EXPOSE_UPSTREAM_MODEL_NAME: boolean = false
++
+ /**
+  * Format model name with mapping indicator
+  */
+@@ -220,16 +225,18 @@ export function formatModelName(log: UsageLog): {
+   actualModel?: string
+ } {
+   const other = parseLogOther(log.other)
+-  const isMapped = !!(
+-    other?.is_model_mapped &&
+-    other?.upstream_model_name &&
+-    other.upstream_model_name !== ''
+-  )
++  const isMapped =
++    EXPOSE_UPSTREAM_MODEL_NAME &&
++    !!(
++      other?.is_model_mapped &&
++      other?.upstream_model_name &&
++      other.upstream_model_name !== ''
++    )
+ 
+   return {
+     name: log.model_name,
+     isMapped,
+-    actualModel: isMapped ? other.upstream_model_name : undefined,
++    actualModel: isMapped ? other?.upstream_model_name : undefined,
+   }
+ }
+ 

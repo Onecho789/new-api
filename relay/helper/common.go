@@ -67,6 +67,8 @@ func ClaudeData(c *gin.Context, resp dto.ClaudeResponse) error {
 	if err != nil {
 		common.SysError("error marshalling stream response: " + err.Error())
 	} else {
+		// CUSTOM: 隐藏实际上游模型 —— 替换 Claude 流式数据中的真实上游模型名。
+		jsonData = common.MaskUpstreamModelInData(c, jsonData)
 		c.Render(-1, common.CustomEvent{Data: fmt.Sprintf("event: %s\n", resp.Type)})
 		c.Render(-1, common.CustomEvent{Data: "data: " + string(jsonData)})
 	}
@@ -79,6 +81,8 @@ func ClaudeChunkData(c *gin.Context, resp dto.ClaudeResponse, data string) {
 		return
 	}
 
+	// CUSTOM: 隐藏实际上游模型 —— 替换 Claude 流式透传 chunk 中的真实上游模型名。
+	data = string(common.MaskUpstreamModelInData(c, []byte(data)))
 	c.Render(-1, common.CustomEvent{Data: fmt.Sprintf("event: %s\n", resp.Type)})
 	c.Render(-1, common.CustomEvent{Data: fmt.Sprintf("data: %s\n", data)})
 	_ = FlushWriter(c)
@@ -89,6 +93,8 @@ func ResponseChunkData(c *gin.Context, resp dto.ResponsesStreamResponse, data st
 		return fmt.Errorf("request context done: %w", c.Request.Context().Err())
 	}
 
+	// CUSTOM: 隐藏实际上游模型 —— 替换 Responses API 流式 chunk 中的真实上游模型名。
+	data = string(common.MaskUpstreamModelInData(c, []byte(data)))
 	c.Render(-1, common.CustomEvent{Data: fmt.Sprintf("event: %s\n", resp.Type)})
 	c.Render(-1, common.CustomEvent{Data: fmt.Sprintf("data: %s", data)})
 	return FlushWriter(c)
@@ -103,6 +109,9 @@ func StringData(c *gin.Context, str string) error {
 		return fmt.Errorf("request context done: %w", c.Request.Context().Err())
 	}
 
+	// CUSTOM: 隐藏实际上游模型 —— 流式响应统一出口（含 OpenAI/Gemini 透传与 ObjectData 序列化对象），
+	// 替换数据中的真实上游模型名。
+	str = string(common.MaskUpstreamModelInData(c, []byte(str)))
 	c.Render(-1, common.CustomEvent{Data: "data: " + str})
 	return FlushWriter(c)
 }
