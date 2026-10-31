@@ -29,12 +29,18 @@ type RealtimeEvent struct {
 	Item     *RealtimeItem      `json:"item,omitempty"`
 	Error    *types.OpenAIError `json:"error,omitempty"`
 	Response *RealtimeResponse  `json:"response,omitempty"`
-	Delta    string             `json:"delta,omitempty"`
-	Audio    string             `json:"audio,omitempty"`
+	// Instructions is accepted for clients that send a flattened response
+	// event. The standard shape nests it under response.
+	Instructions string `json:"instructions,omitempty"`
+	Delta        string `json:"delta,omitempty"`
+	Audio        string `json:"audio,omitempty"`
 }
 
 type RealtimeResponse struct {
-	Usage *RealtimeUsage `json:"usage"`
+	Usage        *RealtimeUsage `json:"usage,omitempty"`
+	Instructions string         `json:"instructions,omitempty"`
+	Tools        []RealTimeTool `json:"tools,omitempty"`
+	Input        []RealtimeItem `json:"input,omitempty"`
 }
 
 type RealtimeUsage struct {
@@ -52,7 +58,9 @@ type RealtimeSession struct {
 	InputAudioFormat        string                  `json:"input_audio_format"`
 	OutputAudioFormat       string                  `json:"output_audio_format"`
 	InputAudioTranscription InputAudioTranscription `json:"input_audio_transcription"`
-	TurnDetection           interface{}             `json:"turn_detection"`
+	Audio                   *RealtimeSessionAudio   `json:"audio,omitempty"`
+	Prompt                  *RealtimePrompt         `json:"prompt,omitempty"`
+	TurnDetection           any                     `json:"turn_detection"`
 	Tools                   []RealTimeTool          `json:"tools"`
 	ToolChoice              string                  `json:"tool_choice"`
 	Temperature             float64                 `json:"temperature"`
@@ -60,7 +68,23 @@ type RealtimeSession struct {
 }
 
 type InputAudioTranscription struct {
-	Model string `json:"model"`
+	Model    string   `json:"model"`
+	Prompt   string   `json:"prompt,omitempty"`
+	Keywords []string `json:"keywords,omitempty"`
+}
+
+type RealtimeSessionAudio struct {
+	Input *RealtimeSessionAudioInput `json:"input,omitempty"`
+}
+
+type RealtimeSessionAudioInput struct {
+	Transcription *InputAudioTranscription `json:"transcription,omitempty"`
+}
+
+type RealtimePrompt struct {
+	Id        string         `json:"id,omitempty"`
+	Version   string         `json:"version,omitempty"`
+	Variables map[string]any `json:"variables,omitempty"`
 }
 
 type RealTimeTool struct {
@@ -79,6 +103,8 @@ type RealtimeItem struct {
 	Name      *string           `json:"name,omitempty"`
 	ToolCalls any               `json:"tool_calls,omitempty"`
 	CallId    string            `json:"call_id,omitempty"`
+	Arguments any               `json:"arguments,omitempty"`
+	Output    any               `json:"output,omitempty"`
 }
 type RealtimeContent struct {
 	Type       string `json:"type"`

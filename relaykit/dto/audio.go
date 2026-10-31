@@ -9,8 +9,14 @@ import (
 )
 
 type AudioRequest struct {
-	Model          string          `json:"model"`
-	Input          string          `json:"input"`
+	Model string `json:"model"`
+	Input string `json:"input"`
+	// Prompt and Text are accepted by several OpenAI-compatible audio
+	// providers (including multipart and vendor TTS metadata forms). Keep them
+	// separate from Input so the prompt guard can inspect the effective text
+	// before an adaptor rewrites the request.
+	Prompt         string          `json:"prompt,omitempty"`
+	Text           string          `json:"text,omitempty"`
 	Voice          string          `json:"voice"`
 	Instructions   string          `json:"instructions,omitempty"`
 	ResponseFormat string          `json:"response_format,omitempty"`

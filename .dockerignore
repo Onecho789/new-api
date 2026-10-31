@@ -9,4 +9,18 @@ docs
 .gocache
 /web/node_modules
 /web/dist
+# 本地调试产物：会被 COPY . . 带进镜像，且单个 130+ MB
+*.exe
+*.db
+*.log
+# 本地配置、日志和定制备份不进入构建上下文。
+**/.env
+**/.env.*
+!/.env.example
+/logs
+/.playwright-mcp
+/custom-patches
+**/*.db
+**/*.db-*
+**/*.log
 !THIRD-PARTY-LICENSES.md

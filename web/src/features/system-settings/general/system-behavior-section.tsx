@@ -44,6 +44,7 @@ const behaviorSchema = z.object({
   DefaultCollapseSidebar: z.boolean(),
   DemoSiteEnabled: z.boolean(),
   SelfUseModeEnabled: z.boolean(),
+  ResponseModelMismatchEnabled: z.boolean(),
 })
 
 type BehaviorFormValues = z.infer<typeof behaviorSchema>
@@ -70,8 +71,12 @@ export function SystemBehaviorSection({
       ([key, value]) => value !== defaultValues[key as keyof BehaviorFormValues]
     )
 
-    for (const [key, value] of updates) {
-      await updateOption.mutateAsync({ key, value })
+    try {
+      for (const [key, value] of updates) {
+        await updateOption.mutateAsync({ key, value })
+      }
+    } catch {
+      // The mutation reports the error; keep unsaved values available for retry.
     }
   }
 
@@ -134,6 +139,29 @@ export function SystemBehaviorSection({
                   <FormLabel>{t('Self-Use Mode')}</FormLabel>
                   <FormDescription>
                     {t('Optimize system for self-hosted single-user usage')}
+                  </FormDescription>
+                </SettingsSwitchContent>
+                <FormControl>
+                  <Switch
+                    checked={field.value}
+                    onCheckedChange={field.onChange}
+                  />
+                </FormControl>
+              </SettingsSwitchItem>
+            )}
+          />
+
+          <FormField
+            control={form.control}
+            name='ResponseModelMismatchEnabled'
+            render={({ field }) => (
+              <SettingsSwitchItem>
+                <SettingsSwitchContent>
+                  <FormLabel>{t('Response model mismatch')}</FormLabel>
+                  <FormDescription>
+                    {t(
+                      'When disabled, response model diagnostics are hidden from all log pages and log API responses, including historical logs.'
+                    )}
                   </FormDescription>
                 </SettingsSwitchContent>
                 <FormControl>

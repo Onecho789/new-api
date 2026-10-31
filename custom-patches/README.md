@@ -1,53 +1,34 @@
-# 自定义改动补丁
+# 自定义改动与上游同步记录
 
-本目录存放对上游 `QuantumNous/new-api` 的本地自定义改动备份，用于合并上游后快速恢复或重放。
+完整功能、整合位置和验证方式见 [自定义改动合并手册.md](./自定义改动合并手册.md)。仓库外同名手册同步维护。
 
-## 📖 完整文档
+当前已合入的上游内容基线记录在 [upstream-baseline.txt](./upstream-baseline.txt)：`ea343c4a81151bfd537d33b66527c25fa21a1112`（2026-10-31 主线，含 rc.42–rc.47，2026-10-31 合入）。HEAD 与分支保持原样，本地定制和上游合并结果为未提交改动。后续按内容基线计算增量。
 
-**改动明细、合并流程、冲突处理全部见 [`自定义改动合并手册.md`](./自定义改动合并手册.md)**（本目录内）
+需要保留的功能：
 
-本机另有一份同步副本在仓库外一层：`D:\2api-codes\newapi\自定义改动合并手册.md`。
+- 日志、HTTP/SSE、Responses WebSocket 的映射模型名隐藏；历史消费和任务日志的前端隐藏。
+- 完整生图演练场：文生图、图生图、多图/蒙版、预览、下载、继续编辑、重新生成及七语言。
+- 全局安全提示词、管理设置和管理员注入状态。
+- `gpt-image-2` 模型与既有价格配置，以及原有 DTO、Realtime、参数零值和错误处理修复。
+- 「响应模型不一致」诊断开关与密钥分类管理（密钥分组）。
 
-本 README 只说明本目录的文件结构。
+2026-09-19 完整备份位于仓库外 `../merge-backups/20260919-005622/`，包含工作区归档、原始索引、SHA256 清单、合并前分层补丁、上游增量和最终定制差异及验证记录。
 
-## 一句话背景
+恢复以最新完整备份和合并手册为准。旧 CUSTOM 数量与旧代码行号仅用于历史定位，正确性由功能回归测试验证。
 
-渠道配置 `model_mapping` 时，日志与 API 响应体都只暴露用户请求的模型名，不泄露映射后的真实上游模型（`upstream_model_name`）。共 10 处改动 / 8 个文件，全部带 `CUSTOM` 注释标记，**从不提交到 git**，永远以工作区未提交状态存在。
+2026-09-19 镜像 `20260919-0056` 与 `latest` 已上传指定仓库，摘要 `sha256:692e696eb4e6bf02561a7d0901ccf9c6d50252c40a75c85d1a8bfcba68eff5dd`；前后端、三库与隔离镜像验证见上述备份。服务器部署另行执行。
 
-快速校验标记是否还在（预期 `1 2 2 1 1 4 1 2`）：
 
-```bash
-grep -c CUSTOM \
-  service/log_info_generate.go service/task_billing.go controller/relay.go \
-  common/model_mask.go service/http.go relay/helper/common.go \
-  web/src/features/usage-logs/lib/format.ts \
-  web/src/features/usage-logs/components/dialogs/details-dialog.tsx
-```
+2026-09-20 新增「响应模型不一致」诊断开关，关闭后所有角色的日志 API 移除 `response_model`，页面隐藏告警和详情，内部记录继续保留。合并时同时保留开关配置、状态下发、前端缓存处理和后端日志出口过滤，具体见手册第十二节。
 
-## 目录结构
+诊断开关镜像 `20260920-1007` 与 `latest` 已上传，版本 `custom-20260920-1007-ea336ed66`，摘要 `sha256:1471cde60d307f2277aaa0036d74d0b7f3b8515d15e695444b02049b757d59aa`；发布证据位于 `../merge-backups/20260920-100737/`。服务器部署后按自身数据库中的设置生效，首次使用时可在系统行为中关闭该开关。
 
-| 路径 | 说明 |
-|---|---|
-| `backup-<时间戳>/` | 每次合并上游前的备份，见下表 |
-| `hide-actual-model.patch` | 最早期只含功能一（日志脱敏）的补丁，基线很旧，**仅作参考**。恢复请用最新 `backup-*/`。 |
 
-### `backup-<时间戳>/` 内容
+2026-09-20 修复绘图日志侧栏入口：绘图日志与任务日志独立显示、按开关过滤并各自高亮，页面标题随分类切换。2026-10-05 用户确认取消此独立入口定制，后续采用上游聚合导航；本段镜像仅为历史发布记录。当时发布的镜像 `20260920-2235` 与 `latest` 已推送，摘要 `sha256:0057212f11a6561c93fc7016e2574668e22b690e2358f1ac81932bb450d7d9a5`；发布证据见 `../merge-backups/20260920-223515/`。
 
-| 文件 | 说明 |
-|---|---|
-| `base-commit.txt` | 合并**前**的上游基线 commit |
-| `merged-to-commit.txt` | 合并**后**的 commit |
-| `local-changes.patch` | 自定义改动 diff（**不含**新增文件内容） |
-| `local-changes-binary.patch` | 同上，binary 格式 |
-| `model_mask.go.bak` | `common/model_mask.go` 完整副本 —— 新增文件不在 diff 里，必须单独备份 |
-| `superseded-docs/` | 已被合并手册取代的旧文档存档（仅 `backup-20260731-205313/` 有） |
 
-## 用 patch 重放
+2026-10-05 增量合入 69 个提交，源码版本 `custom-20261005-1456-1a4166d8e`。保留其他全部定制，模型诊断在隐藏名称前计算并保存结果，图片/Responses 插件输出接入共享脱敏。两份手册同步；完整证据见 `D:/2api-codes/newapi/merge-backups/20261005-145645/`。本轮原暂存内容、HEAD与分支保持不变，未提交、未发布镜像、未部署服务器。
 
-```bash
-BK=custom-patches/backup-20260731-205313      # 换成最新的
-git apply --3way "$BK/local-changes.patch"
-cp "$BK/model_mask.go.bak" common/model_mask.go
-```
+2026-10-05 经用户确认，已将相同验收源码发布为 `20261005-1709` 与 `latest`，平台 `linux/amd64`，版本 `custom-20261005-1456-1a4166d8e`，摘要 `sha256:f9ee1d0e565c48162ba439e8e5036433dd2d775f43d99d1d17b34227c32e1a9a`。构建、隔离镜像验证及远端摘要均通过，证据见 `D:/2api-codes/newapi/merge-backups/release-20261005-170939/`。业务源码、HEAD/分支和暂存内容保持原样；服务器 Compose 更新另行执行。
 
-若因上游改动 patch 打不上，按手册「三、改动明细」里的 10 处逐个手动重做。
+2026-10-31 增量合入 182 个提交（rc.42–rc.47），源码版本 `custom-20261031-1706-ea343c4a8`。保留全部定制；密钥分组报错改用上游前端翻译键，上游新增的原生插件 SSE/JSON 出口接入模型名隐藏。经用户确认，Grok 视频改用上游内置 `xai` 插件，上传型 `grok` 插件及其测试退役（插件与测试归档于备份 `retired-grok/`）。详见手册第十六节；完整证据见 `D:/2api-codes/newapi/merge-backups/20261031-170618/`。未提交、未发布镜像、未部署服务器。

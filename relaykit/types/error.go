@@ -145,7 +145,9 @@ func (e *NewAPIError) ErrorWithStatusCode() string {
 	return fmt.Sprintf("status_code=%d, %s", e.StatusCode, msg)
 }
 
-func (e *NewAPIError) MaskSensitiveError() string {
+// MaskSensitiveError masks the upstream addresses of the channel that produced
+// the error in the error text; see kitutil.MaskSensitiveInfo.
+func (e *NewAPIError) MaskSensitiveError(upstreamURLs ...string) string {
 	if e == nil {
 		return ""
 	}
@@ -156,14 +158,14 @@ func (e *NewAPIError) MaskSensitiveError() string {
 	if e.errorCode == ErrorCodeCountTokenFailed {
 		return errStr
 	}
-	return kitutil.MaskSensitiveInfo(errStr)
+	return kitutil.MaskSensitiveInfo(errStr, upstreamURLs...)
 }
 
-func (e *NewAPIError) MaskSensitiveErrorWithStatusCode() string {
+func (e *NewAPIError) MaskSensitiveErrorWithStatusCode(upstreamURLs ...string) string {
 	if e == nil {
 		return ""
 	}
-	msg := e.MaskSensitiveError()
+	msg := e.MaskSensitiveError(upstreamURLs...)
 	if e.StatusCode == 0 {
 		return msg
 	}
@@ -174,18 +176,42 @@ func (e *NewAPIError) MaskSensitiveErrorWithStatusCode() string {
 }
 
 func (e *NewAPIError) SetMessage(message string) {
+	if e == nil {
+		return
+	}
 	e.Err = errors.New(message)
+	switch relayError := e.RelayError.(type) {
+	case OpenAIError:
+		relayError.Message = message
+		e.RelayError = relayError
+	case *OpenAIError:
+		if relayError != nil {
+			relayError.Message = message
+		}
+	case ClaudeError:
+		relayError.Message = message
+		e.RelayError = relayError
+	case *ClaudeError:
+		if relayError != nil {
+			relayError.Message = message
+		}
+	}
 }
 
-func (e *NewAPIError) ToOpenAIError() OpenAIError {
+// ToOpenAIError masks the upstream addresses in the message; pass those of the
+// channel that produced the error, or none when no channel did.
+func (e *NewAPIError) ToOpenAIError(upstreamURLs ...string) OpenAIError {
+	if e == nil {
+		return OpenAIError{}
+	}
 	var result OpenAIError
 	switch e.errorType {
 	case ErrorTypeOpenAIError:
-		if openAIError, ok := e.RelayError.(OpenAIError); ok {
+		if openAIError, ok := relayOpenAIErrorValue(e.RelayError); ok {
 			result = openAIError
 		}
 	case ErrorTypeClaudeError:
-		if claudeError, ok := e.RelayError.(ClaudeError); ok {
+		if claudeError, ok := relayClaudeErrorValue(e.RelayError); ok {
 			result = OpenAIError{
 				Message: e.Error(),
 				Type:    claudeError.Type,
@@ -202,7 +228,7 @@ func (e *NewAPIError) ToOpenAIError() OpenAIError {
 		}
 	}
 	if e.errorCode != ErrorCodeCountTokenFailed {
-		result.Message = kitutil.MaskSensitiveInfo(result.Message)
+		result.Message = kitutil.MaskSensitiveInfo(result.Message, upstreamURLs...)
 	}
 	if result.Message == "" {
 		result.Message = string(e.errorType)
@@ -210,18 +236,22 @@ func (e *NewAPIError) ToOpenAIError() OpenAIError {
 	return result
 }
 
-func (e *NewAPIError) ToClaudeError() ClaudeError {
+// ToClaudeError masks the upstream addresses like ToOpenAIError.
+func (e *NewAPIError) ToClaudeError(upstreamURLs ...string) ClaudeError {
+	if e == nil {
+		return ClaudeError{}
+	}
 	var result ClaudeError
 	switch e.errorType {
 	case ErrorTypeOpenAIError:
-		if openAIError, ok := e.RelayError.(OpenAIError); ok {
+		if openAIError, ok := relayOpenAIErrorValue(e.RelayError); ok {
 			result = ClaudeError{
 				Message: e.Error(),
 				Type:    fmt.Sprintf("%v", openAIError.Code),
 			}
 		}
 	case ErrorTypeClaudeError:
-		if claudeError, ok := e.RelayError.(ClaudeError); ok {
+		if claudeError, ok := relayClaudeErrorValue(e.RelayError); ok {
 			result = claudeError
 		}
 	default:
@@ -231,12 +261,39 @@ func (e *NewAPIError) ToClaudeError() ClaudeError {
 		}
 	}
 	if e.errorCode != ErrorCodeCountTokenFailed {
-		result.Message = kitutil.MaskSensitiveInfo(result.Message)
+		result.Message = kitutil.MaskSensitiveInfo(result.Message, upstreamURLs...)
 	}
 	if result.Message == "" {
 		result.Message = string(e.errorType)
 	}
 	return result
+}
+
+// Relay errors are normally stored as values, but callers may attach a
+// pointer while enriching an error. Accept both forms so conversion and
+// SetMessage expose the same client-facing payload.
+func relayOpenAIErrorValue(value any) (OpenAIError, bool) {
+	switch relayError := value.(type) {
+	case OpenAIError:
+		return relayError, true
+	case *OpenAIError:
+		if relayError != nil {
+			return *relayError, true
+		}
+	}
+	return OpenAIError{}, false
+}
+
+func relayClaudeErrorValue(value any) (ClaudeError, bool) {
+	switch relayError := value.(type) {
+	case ClaudeError:
+		return relayError, true
+	case *ClaudeError:
+		if relayError != nil {
+			return *relayError, true
+		}
+	}
+	return ClaudeError{}, false
 }
 
 type NewAPIErrorOptions func(*NewAPIError)

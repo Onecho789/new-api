@@ -16,22 +16,23 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
+import { useQueryClient } from '@tanstack/react-query'
 import React, { useState, useCallback, useRef, useEffect } from 'react'
 import { useTranslation } from 'react-i18next'
-import { toast } from 'sonner'
 
 import useDialogState from '@/hooks/use-dialog'
+import { handleServerError } from '@/lib/handle-server-error'
 
 import { fetchTokenKey, fetchTokenKeysBatch } from '../api'
 import { ERROR_MESSAGES } from '../constants'
-import { type ApiKey, type ApiKeysDialogType } from '../types'
+import type { ApiKey, ApiKeysDialogType } from '../types'
 
 type ApiKeysContextType = {
   open: ApiKeysDialogType | null
   setOpen: (str: ApiKeysDialogType | null) => void
   currentRow: ApiKey | null
   setCurrentRow: React.Dispatch<React.SetStateAction<ApiKey | null>>
-  refreshTrigger: number
+  defaultCategoryId: number
   triggerRefresh: () => void
   resolvedKey: string
   setResolvedKey: React.Dispatch<React.SetStateAction<string>>
@@ -45,11 +46,14 @@ type ApiKeysContextType = {
 
 const ApiKeysContext = React.createContext<ApiKeysContextType | null>(null)
 
-export function ApiKeysProvider({ children }: { children: React.ReactNode }) {
+export function ApiKeysProvider(props: {
+  children: React.ReactNode
+  defaultCategoryId?: number
+}) {
   const { t } = useTranslation()
+  const queryClient = useQueryClient()
   const [open, setOpen] = useDialogState<ApiKeysDialogType>(null)
   const [currentRow, setCurrentRow] = useState<ApiKey | null>(null)
-  const [refreshTrigger, setRefreshTrigger] = useState(0)
   const [resolvedKey, setResolvedKey] = useState('')
 
   const [resolvedKeys, setResolvedKeys] = useState<Record<number, string>>({})
@@ -70,8 +74,10 @@ export function ApiKeysProvider({ children }: { children: React.ReactNode }) {
   }, [])
 
   const triggerRefresh = useCallback(() => {
-    setRefreshTrigger((prev) => prev + 1)
-  }, [])
+    void queryClient.invalidateQueries({ queryKey: ['keys'] })
+    void queryClient.invalidateQueries({ queryKey: ['token-categories'] })
+    void queryClient.invalidateQueries({ queryKey: ['api-key'] })
+  }, [queryClient])
 
   const resolveRealKey = useCallback(
     async (id: number): Promise<string | null> => {
@@ -87,10 +93,10 @@ export function ApiKeysProvider({ children }: { children: React.ReactNode }) {
             setResolvedKeys((prev) => ({ ...prev, [id]: fullKey }))
             return fullKey
           }
-          toast.error(res.message || t(ERROR_MESSAGES.UNEXPECTED))
+          handleServerError(res, t(ERROR_MESSAGES.UNEXPECTED))
           return null
-        } catch {
-          toast.error(t(ERROR_MESSAGES.UNEXPECTED))
+        } catch (error) {
+          handleServerError(error, t(ERROR_MESSAGES.UNEXPECTED))
           return null
         } finally {
           delete pendingRequests.current[id]
@@ -136,10 +142,10 @@ export function ApiKeysProvider({ children }: { children: React.ReactNode }) {
           }
           return result
         }
-        toast.error(res.message || t(ERROR_MESSAGES.UNEXPECTED))
+        handleServerError(res, t(ERROR_MESSAGES.UNEXPECTED))
         return {}
-      } catch {
-        toast.error(t(ERROR_MESSAGES.UNEXPECTED))
+      } catch (error) {
+        handleServerError(error, t(ERROR_MESSAGES.UNEXPECTED))
         return {}
       } finally {
         for (const id of uncachedIds) {
@@ -161,7 +167,7 @@ export function ApiKeysProvider({ children }: { children: React.ReactNode }) {
         setOpen,
         currentRow,
         setCurrentRow,
-        refreshTrigger,
+        defaultCategoryId: props.defaultCategoryId ?? 0,
         triggerRefresh,
         resolvedKey,
         setResolvedKey,
@@ -173,7 +179,7 @@ export function ApiKeysProvider({ children }: { children: React.ReactNode }) {
         markKeyCopied,
       }}
     >
-      {children}
+      {props.children}
     </ApiKeysContext>
   )
 }

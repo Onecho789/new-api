@@ -25,6 +25,7 @@ import type {
   GetApiKeysResponse,
   SearchApiKeysParams,
   ApiKeyFormData,
+  TokenAutoGroupsConfig,
 } from './types'
 
 // ============================================================================
@@ -35,8 +36,12 @@ import type {
 export async function getApiKeys(
   params: GetApiKeysParams = {}
 ): Promise<GetApiKeysResponse> {
-  const { p = 1, size = 10 } = params
-  const res = await api.get(`/api/token/?p=${p}&size=${size}`)
+  const { p = 1, size = 10, category_id } = params
+  const queryParams = new URLSearchParams({ p: String(p), size: String(size) })
+  if (category_id !== undefined) {
+    queryParams.set('category_id', String(category_id))
+  }
+  const res = await api.get(`/api/token/?${queryParams.toString()}`)
   return res.data
 }
 
@@ -44,12 +49,15 @@ export async function getApiKeys(
 export async function searchApiKeys(
   params: SearchApiKeysParams
 ): Promise<GetApiKeysResponse> {
-  const { keyword = '', token = '', p, size } = params
+  const { keyword = '', token = '', p, size, category_id } = params
   const queryParams = new URLSearchParams()
   if (keyword) queryParams.set('keyword', keyword)
   if (token) queryParams.set('token', token)
   if (p != null) queryParams.set('p', String(p))
   if (size != null) queryParams.set('size', String(size))
+  if (category_id !== undefined) {
+    queryParams.set('category_id', String(category_id))
+  }
   const res = await api.get(`/api/token/search?${queryParams.toString()}`)
   return res.data
 }
@@ -57,6 +65,14 @@ export async function searchApiKeys(
 // Get single API key by ID
 export async function getApiKey(id: number): Promise<ApiResponse<ApiKey>> {
   const res = await api.get(`/api/token/${id}`)
+  return res.data
+}
+
+// Get the current user's global Auto order and the per-token selection limit.
+export async function getTokenAutoGroups(): Promise<
+  ApiResponse<TokenAutoGroupsConfig>
+> {
+  const res = await api.get('/api/token/auto-groups')
   return res.data
 }
 

@@ -2,6 +2,9 @@ package common
 
 import (
 	"bytes"
+	"slices"
+	"strconv"
+	"strings"
 
 	"github.com/QuantumNous/new-api/constant"
 
@@ -15,6 +18,22 @@ import (
 
 // customModelMaskCacheKey 缓存本次请求计算出的替换对，避免每个流式 chunk 重复解析 model_mapping。
 const customModelMaskCacheKey = "custom_model_mask_pairs"
+const customModelMaskUpstreamKey = "custom_model_mask_upstream"
+
+type customModelMaskCache struct {
+	requestModel  string
+	modelMapping  string
+	upstreamModel string
+	pairs         []customModelMaskPair
+}
+
+// SetUpstreamModelForMasking 记录模型映射和修饰符处理后的真实上游模型名。
+// 由模型处理链路提供最终名称，避免脱敏层重复实现渠道的模型解析规则。
+func SetUpstreamModelForMasking(c *gin.Context, upstreamModel string) {
+	if c != nil {
+		c.Set(customModelMaskUpstreamKey, upstreamModel)
+	}
+}
 
 // customModelMaskPair 一个替换对：把 from（带引号的上游模型名）替换为 to（带引号的请求模型名）。
 type customModelMaskPair struct {
@@ -44,16 +63,41 @@ func MaskUpstreamModelInData(c *gin.Context, data []byte) []byte {
 	return data
 }
 
+// MaskUpstreamModelInText 用于错误日志中的自由文本，与响应体共用映射解析。
+func MaskUpstreamModelInText(c *gin.Context, text string) string {
+	if c == nil || text == "" {
+		return text
+	}
+
+	pairs := getModelMaskPairs(c)
+	replacements := make([]string, 0, len(pairs)*2)
+	for _, pair := range pairs {
+		from, fromErr := strconv.Unquote(string(pair.from))
+		to, toErr := strconv.Unquote(string(pair.to))
+		if fromErr == nil && toErr == nil {
+			replacements = append(replacements, from, to)
+		}
+	}
+	if len(replacements) == 0 {
+		return text
+	}
+	return strings.NewReplacer(replacements...).Replace(text)
+}
+
 // getModelMaskPairs 返回本次请求需要替换的模型名对，结果缓存在 context 中。
 func getModelMaskPairs(c *gin.Context) []customModelMaskPair {
+	requestModel := GetContextKeyString(c, constant.ContextKeyOriginalModel)
+	modelMapping := GetContextKeyString(c, constant.ContextKeyChannelModelMapping)
+	upstreamModel := c.GetString(customModelMaskUpstreamKey)
 	if cached, ok := c.Get(customModelMaskCacheKey); ok {
-		if pairs, ok := cached.([]customModelMaskPair); ok {
-			return pairs
+		if cached, ok := cached.(customModelMaskCache); ok &&
+			cached.requestModel == requestModel && cached.modelMapping == modelMapping && cached.upstreamModel == upstreamModel {
+			return cached.pairs
 		}
 	}
 
 	pairs := computeModelMaskPairs(c)
-	c.Set(customModelMaskCacheKey, pairs)
+	c.Set(customModelMaskCacheKey, customModelMaskCache{requestModel, modelMapping, upstreamModel, pairs})
 	return pairs
 }
 
@@ -87,16 +131,28 @@ func computeModelMaskPairs(c *gin.Context) []customModelMaskPair {
 		current = mapped
 	}
 
-	requestQuoted := []byte(`"` + requestModel + `"`)
+	if upstreamModel := c.GetString(customModelMaskUpstreamKey); upstreamModel != "" {
+		visited[upstreamModel] = true
+	}
+	requestQuoted, err := Marshal(requestModel)
+	if err != nil {
+		return nil
+	}
 	pairs := make([]customModelMaskPair, 0, len(visited))
 	for upstreamModel := range visited {
 		if upstreamModel == "" || upstreamModel == requestModel {
 			continue
 		}
+		upstreamQuoted, err := Marshal(upstreamModel)
+		if err != nil {
+			continue
+		}
 		pairs = append(pairs, customModelMaskPair{
-			from: []byte(`"` + upstreamModel + `"`),
+			from: upstreamQuoted,
 			to:   requestQuoted,
 		})
 	}
+	// 自由文本可能包含互为前缀的模型名，优先匹配完整的长名称。
+	slices.SortFunc(pairs, func(a, b customModelMaskPair) int { return len(b.from) - len(a.from) })
 	return pairs
 }

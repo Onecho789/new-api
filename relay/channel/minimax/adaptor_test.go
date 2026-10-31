@@ -84,6 +84,33 @@ func TestConvertImageRequest(t *testing.T) {
 	}
 }
 
+func TestConvertAudioRequestMetadataTextOverridesInput(t *testing.T) {
+	adaptor := &Adaptor{}
+	info := &relaycommon.RelayInfo{
+		RelayMode:       relayconstant.RelayModeAudioSpeech,
+		OriginModelName: "speech-01",
+	}
+	request := dto.AudioRequest{
+		Model:          "speech-01",
+		Input:          "safe input",
+		Voice:          "voice-1",
+		ResponseFormat: "mp3",
+		Metadata:       json.RawMessage(`{"text":"BLOCK_MARKER"}`),
+	}
+
+	reader, err := adaptor.ConvertAudioRequest(gin.CreateTestContextOnly(httptest.NewRecorder(), gin.New()), info, request)
+	if err != nil {
+		t.Fatalf("ConvertAudioRequest returned error: %v", err)
+	}
+	var payload MiniMaxTTSRequest
+	if err := json.NewDecoder(reader).Decode(&payload); err != nil {
+		t.Fatalf("decode converted request: %v", err)
+	}
+	if payload.Text != "BLOCK_MARKER" {
+		t.Fatalf("text = %q, want metadata override", payload.Text)
+	}
+}
+
 func TestDoResponseForImageGeneration(t *testing.T) {
 	t.Parallel()
 
