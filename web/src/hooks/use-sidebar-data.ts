@@ -18,6 +18,7 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import {
   Activity,
+  BookOpen,
   Box,
   ClipboardList,
   CreditCard,
@@ -116,6 +117,11 @@ export function useSidebarData(badges: SidebarBadges = {}): SidebarData {
             activeUrls: ['/usage-logs/drawing'],
             configUrls: ['/usage-logs/drawing', '/usage-logs/task'],
             icon: ListTodo,
+          },
+          {
+            title: t('Guides'),
+            url: '/guides',
+            icon: BookOpen,
           },
         ],
       },

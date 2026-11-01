@@ -227,6 +227,15 @@ var accessTokenRouteRules = map[string]accessTokenRouteRule{
 	"POST /api/token/batch":            accessTokenScopeRule("api_key:write"),
 	"POST /api/token/batch/keys":       accessTokenScopeRule("api_key:reveal"),
 
+	// router/api-router.go: /api/guide
+	"GET /api/guide/":             accessTokenScopeRule("profile:read"),
+	"GET /api/guide/:id":          accessTokenScopeRule("profile:read"),
+	"GET /api/guide/admin/":       accessTokenScopeRule("option:read"),
+	"GET /api/guide/admin/:id":    accessTokenScopeRule("option:read"),
+	"POST /api/guide/admin/":      accessTokenScopeRule("option:write"),
+	"PUT /api/guide/admin/:id":    accessTokenScopeRule("option:write"),
+	"DELETE /api/guide/admin/:id": accessTokenScopeRule("option:write"),
+
 	// router/api-router.go: /api/redemption
 	"GET /api/redemption/":           accessTokenScopeRule("redemption:read"),
 	"GET /api/redemption/search":     accessTokenScopeRule("redemption:read"),

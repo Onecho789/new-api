@@ -16,6 +16,8 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
+import { GuidesSettingsSection } from '@/features/user-guides/components/guides-settings-section'
+
 import type { ContentSettings } from '../types'
 import { createSectionRegistry } from '../utils/section-registry'
 import { AnnouncementsSection } from './announcements-section'
@@ -82,6 +84,11 @@ const CONTENT_SECTIONS = [
         data={settings['console_setting.faq']}
       />
     ),
+  },
+  {
+    id: 'guides',
+    titleKey: 'Guides',
+    build: () => <GuidesSettingsSection />,
   },
   {
     id: 'uptime-kuma',

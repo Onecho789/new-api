@@ -1139,3 +1139,14 @@ func TestSecurityRoutesDisableCachingBeforeAuthentication(t *testing.T) {
 		})
 	}
 }
+
+func TestUserGuideRoutesRequireAuthentication(t *testing.T) {
+	outer := gin.New()
+	SetApiRouter(outer)
+	for _, path := range []string{"/api/guide/", "/api/guide/1", "/api/guide/admin/", "/api/guide/admin/1"} {
+		t.Run(path, func(t *testing.T) {
+			response := performPluginRequest(outer, http.MethodGet, path)
+			assert.Equal(t, http.StatusUnauthorized, response.Code)
+		})
+	}
+}

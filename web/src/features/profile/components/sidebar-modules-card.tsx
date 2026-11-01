@@ -117,6 +117,11 @@ export function SidebarModulesCard() {
           title: t('Task Logs'),
           description: t('System task records'),
         },
+        {
+          key: 'guide',
+          title: t('Guides'),
+          description: t('Usage guides published by the administrator.'),
+        },
       ],
     },
     {

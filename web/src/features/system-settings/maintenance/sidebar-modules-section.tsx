@@ -126,6 +126,10 @@ export function SidebarModulesSection({
         title: t('Task logs'),
         description: t('Background job tracker for queued work.'),
       },
+      guide: {
+        title: t('Guides'),
+        description: t('Usage guides published by the administrator.'),
+      },
     },
     personal: {
       topup: {
