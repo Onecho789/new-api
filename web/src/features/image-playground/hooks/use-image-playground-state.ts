@@ -16,18 +16,21 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 
+import { DEFAULT_CONFIG } from '../constants'
 import {
   getInitialConfig,
-  getInitialEditParameterEnabled,
   getInitialParameterEnabled,
   getStoredApiKey,
   saveApiKey,
   saveConfig,
-  saveEditParameterEnabled,
   saveParameterEnabled,
 } from '../lib'
+import {
+  normalizeImageParameterEnabled,
+  normalizeImagePlaygroundConfig,
+} from '../lib/storage'
 import type {
   ImageMode,
   ImageParameterEnabled,
@@ -37,14 +40,8 @@ import type {
 export function useImagePlaygroundState() {
   const [config, setConfig] = useState<ImagePlaygroundConfig>(getInitialConfig)
 
-  // 两种模式的参数开关分开记忆：图生图下 size/quality 会被上游忽略，
-  // 默认关闭，切回文生图时不应受影响。
-  const [generateEnabled, setGenerateEnabled] = useState<ImageParameterEnabled>(
-    getInitialParameterEnabled
-  )
-  const [editEnabled, setEditEnabled] = useState<ImageParameterEnabled>(
-    getInitialEditParameterEnabled
-  )
+  const [parameterEnabled, setParameterEnabled] =
+    useState<ImageParameterEnabled>(getInitialParameterEnabled)
 
   // 有本地留存的 Key 说明用户上次选择了记住
   const [apiKey, setApiKey] = useState<string>(getStoredApiKey)
@@ -57,12 +54,8 @@ export function useImagePlaygroundState() {
   }, [config])
 
   useEffect(() => {
-    saveParameterEnabled(generateEnabled)
-  }, [generateEnabled])
-
-  useEffect(() => {
-    saveEditParameterEnabled(editEnabled)
-  }, [editEnabled])
+    saveParameterEnabled(parameterEnabled)
+  }, [parameterEnabled])
 
   useEffect(() => {
     saveApiKey(rememberApiKey ? apiKey : '')
@@ -82,23 +75,39 @@ export function useImagePlaygroundState() {
     setConfig((prev) => (prev.mode === mode ? prev : { ...prev, mode }))
   }, [])
 
-  const parameterEnabled = useMemo(
-    () => (config.mode === 'edit' ? editEnabled : generateEnabled),
-    [config.mode, editEnabled, generateEnabled]
-  )
-
   const updateParameterEnabled = useCallback(
     (key: keyof ImageParameterEnabled, value: boolean) => {
-      const setter =
-        config.mode === 'edit' ? setEditEnabled : setGenerateEnabled
-      setter((prev) => ({ ...prev, [key]: value }))
+      setParameterEnabled((prev) => ({ ...prev, [key]: value }))
     },
-    [config.mode]
+    []
   )
+
+  const restoreConfig = useCallback(
+    (nextConfig: ImagePlaygroundConfig, enabled?: ImageParameterEnabled) => {
+      setConfig(normalizeImagePlaygroundConfig(nextConfig))
+      setParameterEnabled((previous) =>
+        normalizeImageParameterEnabled(enabled ?? previous)
+      )
+    },
+    []
+  )
+
+  const resetSession = useCallback(() => {
+    setConfig((previous) => ({
+      ...previous,
+      mode: 'generate',
+      prompt: '',
+      outputFormat: DEFAULT_CONFIG.outputFormat,
+      frameCount: DEFAULT_CONFIG.frameCount,
+      frameDurationMs: DEFAULT_CONFIG.frameDurationMs,
+    }))
+  }, [])
 
   return {
     config,
     updateConfig,
+    restoreConfig,
+    resetSession,
     setMode,
     parameterEnabled,
     updateParameterEnabled,

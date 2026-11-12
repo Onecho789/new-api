@@ -93,7 +93,7 @@ export function SidebarModulesSection({
         description: t('Experiment with prompts and models in real time.'),
       },
       'image-playground': {
-        title: t('Image Playground'),
+        title: t('Image workbench'),
         description: `${t('Text to image')} / ${t('Image to image')}`,
       },
       chat: {

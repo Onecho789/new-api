@@ -16,10 +16,9 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { useMemo, useState } from 'react'
+import { useId, useMemo } from 'react'
 import { useTranslation } from 'react-i18next'
 
-import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import {
   Select,
@@ -30,7 +29,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
-import { Switch } from '@/components/ui/switch'
 
 import type { SelectOption } from '../types'
 
@@ -52,8 +50,7 @@ export function ImageModelSelect({
   value,
 }: ImageModelSelectProps) {
   const { t } = useTranslation()
-  // 关键词过滤可能漏判自定义模型名，允许切到手填
-  const [manualInput, setManualInput] = useState(false)
+  const modelId = useId()
 
   const options = useMemo(() => {
     const list = imageModels.length > 0 ? imageModels : models
@@ -66,58 +63,38 @@ export function ImageModelSelect({
 
   return (
     <div className='space-y-1.5'>
-      <div className='flex items-center justify-between gap-2'>
-        <Label htmlFor='image-model'>{t('Model')}</Label>
-        <div className='flex items-center gap-2'>
-          <span className='text-muted-foreground text-xs'>
-            {t('Custom name')}
-          </span>
-          <Switch
-            checked={manualInput}
-            disabled={disabled}
-            onCheckedChange={setManualInput}
-          />
-        </div>
-      </div>
-
-      {manualInput ? (
-        <Input
-          className='font-mono'
-          disabled={disabled}
-          id='image-model'
-          placeholder='gpt-image-2'
-          value={value}
-          onChange={(e) => onChange(e.target.value)}
-        />
-      ) : (
-        <Select
-          items={options}
-          value={value}
-          onValueChange={(next) => next !== null && onChange(String(next))}
+      <Label htmlFor={modelId}>{t('Model')}</Label>
+      <Select
+        items={options}
+        value={value}
+        onValueChange={(next) => next !== null && onChange(String(next))}
+      >
+        <SelectTrigger
+          id={modelId}
+          className='w-full rounded-full'
+          disabled={disabled || isLoading}
         >
-          <SelectTrigger className='w-full' disabled={disabled || isLoading}>
-            <SelectValue
-              placeholder={
-                isLoading ? t('Loading models...') : t('Select a model')
-              }
-            />
-          </SelectTrigger>
-          <SelectContent alignItemWithTrigger={false}>
-            <SelectGroup>
-              <SelectLabel>
-                {imageModels.length > 0
-                  ? t('Image models')
-                  : t('Available models')}
-              </SelectLabel>
-              {options.map((option) => (
-                <SelectItem key={option.value} value={option.value}>
-                  {option.label}
-                </SelectItem>
-              ))}
-            </SelectGroup>
-          </SelectContent>
-        </Select>
-      )}
+          <SelectValue
+            placeholder={
+              isLoading ? t('Loading models...') : t('Select a model')
+            }
+          />
+        </SelectTrigger>
+        <SelectContent alignItemWithTrigger={false}>
+          <SelectGroup>
+            <SelectLabel>
+              {imageModels.length > 0
+                ? t('Image models')
+                : t('Available models')}
+            </SelectLabel>
+            {options.map((option) => (
+              <SelectItem key={option.value} value={option.value}>
+                {option.label}
+              </SelectItem>
+            ))}
+          </SelectGroup>
+        </SelectContent>
+      </Select>
     </div>
   )
 }

@@ -42,21 +42,22 @@ describe('acceptUploadFiles', () => {
       makeFile('a.png', 'image/png'),
       makeFile('b.jpg', 'image/jpeg'),
       makeFile('c.webp', 'image/webp'),
+      makeFile('d.gif', 'image/gif'),
     ])
 
-    expect(result.accepted).toHaveLength(3)
+    expect(result.accepted).toHaveLength(4)
     expect(result.rejected).toEqual([])
   })
 
   it('rejects unsupported types and oversized files', () => {
     const result = acceptUploadFiles([
-      makeFile('a.gif', 'image/gif'),
+      makeFile('a.bmp', 'image/bmp'),
       makeFile('b.png', 'image/png', MAX_UPLOAD_SIZE_BYTES + 1),
     ])
 
     expect(result.accepted).toEqual([])
     expect(result.rejected).toEqual([
-      { fileName: 'a.gif', kind: 'type' },
+      { fileName: 'a.bmp', kind: 'type' },
       { fileName: 'b.png', kind: 'size' },
     ])
   })

@@ -16,11 +16,21 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
+import { t } from 'i18next'
+
 import {
-  COMPRESSION_ONLY_FORMATS,
-  MAX_COMPRESSION,
+  DEFAULT_GIF_FRAME_COUNT,
+  DEFAULT_GIF_FRAME_DURATION_MS,
+  GIF_FRAME_DURATION_STEP,
+  IMAGE_ASPECT_OPTIONS,
+  IMAGE_DIMENSION_STEP,
+  IMAGE_SIZE_PRESETS,
+  MAX_GIF_FRAME_COUNT,
+  MAX_GIF_FRAME_DURATION_MS,
   MAX_IMAGE_N,
-  MIN_COMPRESSION,
+  MAX_IMAGE_DIMENSION,
+  MIN_GIF_FRAME_COUNT,
+  MIN_GIF_FRAME_DURATION_MS,
   MIN_IMAGE_N,
 } from '../constants'
 import type {
@@ -43,41 +53,94 @@ export function buildRequestPayload(
     prompt: config.prompt.trim(),
   }
 
-  if (enabled.size && config.size) payload.size = config.size
-  if (enabled.quality && config.quality) payload.quality = config.quality
-  if (enabled.style && config.style) payload.style = config.style
-  if (enabled.responseFormat && config.responseFormat) {
-    payload.response_format = config.responseFormat
+  if (enabled.size && config.size && config.size !== 'auto') {
+    if (IMAGE_ASPECT_OPTIONS.some((option) => option.value === config.size)) {
+      let resolution = '1k'
+      if (config.quality === 'high') resolution = '4k'
+      if (config.quality === 'medium' || config.quality === 'hd') {
+        resolution = '2k'
+      }
+      payload.size = imageSizeForPreset(resolution, config.size)
+    } else {
+      payload.size = config.size
+    }
   }
+  if (enabled.quality && config.quality && config.quality !== 'auto') {
+    payload.quality = config.quality
+  }
+  // Match the reference workbench without restoring removed user controls.
+  // GPT Image (including gateway aliases with that prefix) returns base64.
+  if (!/gpt-image/.test(payload.model)) payload.response_format = 'b64_json'
   if (enabled.outputFormat && config.outputFormat) {
     payload.output_format = config.outputFormat
   }
-  if (enabled.background && config.background) {
-    payload.background = config.background
-  }
-  // 压缩率仅对 jpeg/webp 有效，png 传 <100 会被上游拒绝
   if (
-    enabled.outputCompression &&
-    enabled.outputFormat &&
-    supportsCompression(config.outputFormat)
+    enabled.background &&
+    config.background === 'transparent' &&
+    (payload.output_format === 'png' || payload.output_format === 'webp')
   ) {
-    payload.output_compression = clampCompression(config.outputCompression)
+    payload.background = 'transparent'
   }
-  if (enabled.n) payload.n = clampImageN(config.n)
+  if (payload.output_format === 'gif') {
+    payload.frame_count = clampGifFrameCount(config.frameCount)
+    payload.frame_duration_ms = clampGifFrameDuration(config.frameDurationMs)
+  }
+  // config.n is the workbench batch count; the hook issues separate requests.
+  if (enabled.n) payload.n = 1
 
-  return payload
+  return normalizeImageRequestSnapshot(payload)
 }
 
-export function supportsCompression(outputFormat: string): boolean {
-  return COMPRESSION_ONLY_FORMATS.has(outputFormat)
+export function clampGifFrameCount(value: number): number {
+  if (!Number.isFinite(value)) return DEFAULT_GIF_FRAME_COUNT
+  return Math.min(
+    MAX_GIF_FRAME_COUNT,
+    Math.max(MIN_GIF_FRAME_COUNT, Math.floor(value))
+  )
 }
 
-export function clampCompression(value: number): number {
-  if (!Number.isFinite(value)) return MAX_COMPRESSION
-  const rounded = Math.round(value)
-  if (rounded < MIN_COMPRESSION) return MIN_COMPRESSION
-  if (rounded > MAX_COMPRESSION) return MAX_COMPRESSION
-  return rounded
+export function clampGifFrameDuration(value: number): number {
+  if (!Number.isFinite(value)) return DEFAULT_GIF_FRAME_DURATION_MS
+  const rounded =
+    Math.round(value / GIF_FRAME_DURATION_STEP) * GIF_FRAME_DURATION_STEP
+  return Math.min(
+    MAX_GIF_FRAME_DURATION_MS,
+    Math.max(MIN_GIF_FRAME_DURATION_MS, rounded)
+  )
+}
+
+/** Keep original request options on retries except combinations GIF cannot accept. */
+export function normalizeImageRequestSnapshot(
+  request: ImageGenerationRequest
+): ImageGenerationRequest {
+  const normalized = { ...request }
+  if (request.output_format === 'gif') {
+    normalized.frame_count = clampGifFrameCount(
+      request.frame_count ?? DEFAULT_GIF_FRAME_COUNT
+    )
+    normalized.frame_duration_ms = clampGifFrameDuration(
+      request.frame_duration_ms ?? DEFAULT_GIF_FRAME_DURATION_MS
+    )
+    delete normalized.output_compression
+    if (normalized.background === 'transparent') delete normalized.background
+    const dimensions = /^(\d+)x(\d+)$/i.exec(request.size ?? '')
+    if (dimensions) {
+      const width = Number(dimensions[1])
+      const height = Number(dimensions[2])
+      if (
+        Number.isSafeInteger(width) &&
+        Number.isSafeInteger(height) &&
+        width > 0 &&
+        height > 0
+      ) {
+        normalized.size = `${Math.ceil(width / IMAGE_DIMENSION_STEP) * IMAGE_DIMENSION_STEP}x${Math.ceil(height / IMAGE_DIMENSION_STEP) * IMAGE_DIMENSION_STEP}`
+      }
+    }
+  } else {
+    delete normalized.frame_count
+    delete normalized.frame_duration_ms
+  }
+  return normalized
 }
 
 /**
@@ -87,9 +150,13 @@ export function clampCompression(value: number): number {
  */
 export function buildEditFormData(
   payload: ImageGenerationRequest,
-  images: UploadedImage[],
-  mask: UploadedImage | null
+  images: Pick<UploadedImage, 'file'>[],
+  mask: Pick<UploadedImage, 'file'> | null
 ): FormData {
+  payload = normalizeImageRequestSnapshot(payload)
+  if (payload.output_format === 'gif' && mask) {
+    throw new Error(t('GIF output does not support masks'))
+  }
   const form = new FormData()
 
   const field = images.length > 1 ? 'image[]' : 'image'
@@ -116,6 +183,12 @@ export function buildEditFormData(
   if (payload.output_compression !== undefined) {
     form.append('output_compression', String(payload.output_compression))
   }
+  if (payload.frame_count !== undefined) {
+    form.append('frame_count', String(payload.frame_count))
+  }
+  if (payload.frame_duration_ms !== undefined) {
+    form.append('frame_duration_ms', String(payload.frame_duration_ms))
+  }
   if (payload.n !== undefined) form.append('n', String(payload.n))
 
   return form
@@ -123,28 +196,110 @@ export function buildEditFormData(
 
 export function clampImageN(value: number): number {
   if (!Number.isFinite(value)) return MIN_IMAGE_N
-  const rounded = Math.round(value)
+  const rounded = Math.floor(value)
   if (rounded < MIN_IMAGE_N) return MIN_IMAGE_N
   if (rounded > MAX_IMAGE_N) return MAX_IMAGE_N
   return rounded
 }
 
+export function imageSizeForPreset(resolution: string, ratio: string): string {
+  if (ratio === 'auto') return 'auto'
+  if (resolution === 'auto') return ratio
+  return IMAGE_SIZE_PRESETS[resolution]?.[ratio] ?? 'auto'
+}
+
+export function normalizeImageDimension(value: number, align: boolean): number {
+  const whole = Number.isFinite(value) ? Math.max(1, Math.floor(value)) : 1024
+  const aligned = align
+    ? Math.ceil(whole / IMAGE_DIMENSION_STEP) * IMAGE_DIMENSION_STEP
+    : whole
+  return Math.min(MAX_IMAGE_DIMENSION, aligned)
+}
+
+export function readImageSizeSettings(size: string): {
+  resolution: string
+  ratio: string
+  width: number
+  height: number
+} {
+  const pixels = /^(\d+)x(\d+)$/i.exec(size)
+  if (!pixels) {
+    const ratio =
+      IMAGE_ASPECT_OPTIONS.find((option) => option.value === size)?.value ??
+      'auto'
+    const preset = IMAGE_SIZE_PRESETS['1k'][ratio] ?? '1024x1024'
+    const [width, height] = preset.split('x').map(Number)
+    return { resolution: 'auto', ratio, width, height }
+  }
+  const width = Number(pixels[1])
+  const height = Number(pixels[2])
+  let resolution = Object.keys(IMAGE_SIZE_PRESETS).find((key) =>
+    Object.values(IMAGE_SIZE_PRESETS[key]).includes(size.toLowerCase())
+  )
+  if (!resolution) {
+    resolution = '1k'
+    if (Math.max(width, height) >= 1536) resolution = '2k'
+    if (Math.max(width, height) >= 3072) resolution = '4k'
+  }
+  let ratio = '1:1'
+  let distance = Number.POSITIVE_INFINITY
+  for (const option of IMAGE_ASPECT_OPTIONS) {
+    if (option.value === 'auto') continue
+    const candidate = Math.abs(option.width / option.height - width / height)
+    if (candidate < distance) {
+      ratio = option.value
+      distance = candidate
+    }
+  }
+  return { resolution, ratio, width, height }
+}
+
+function detectImageFormat(
+  item: { b64_json?: string; url?: string },
+  outputFormat?: string
+): string | undefined {
+  if (item.b64_json) {
+    try {
+      // Read only the header, never decode the full multi-megabyte image.
+      const header = atob(item.b64_json.slice(0, 32))
+      if (header.startsWith('GIF87a') || header.startsWith('GIF89a')) {
+        return 'gif'
+      }
+      if (header.startsWith('\x89PNG\r\n\x1a\n')) return 'png'
+      if (header.startsWith('\xff\xd8\xff')) return 'jpeg'
+      if (header.startsWith('RIFF') && header.slice(8, 12) === 'WEBP') {
+        return 'webp'
+      }
+    } catch {
+      // Preserve existing handling of providers with non-standard base64.
+    }
+  }
+  const normalized = outputFormat?.toLowerCase()
+  if (normalized === 'jpg') return 'jpeg'
+  if (normalized && ['png', 'jpeg', 'webp', 'gif'].includes(normalized)) {
+    return normalized
+  }
+  const sourceFormat = item.url
+    ?.match(/(?:^data:image\/|\.)(png|jpe?g|webp|gif)(?:[;?#]|$)/i)?.[1]
+    ?.toLowerCase()
+  if (sourceFormat === 'jpg') return 'jpeg'
+  return sourceFormat
+}
+
 /**
  * b64_json 与 url 两种返回形态统一成可直接渲染的 src。
- * MIME 跟随上游返回的 output_format，否则 webp/jpeg 会被标成 png。
+ * 优先使用内嵌图片，避免 HTTPS 页面加载上游 HTTP 地址时被浏览器拦截。
+ * Inspect known signatures first so GIF responses keep their animation and MIME.
  */
 export function resolveImageSrc(
   item: { b64_json?: string; url?: string },
   outputFormat?: string
 ): string | null {
-  if (item.url) return item.url
   if (item.b64_json) {
-    const mime =
-      outputFormat === 'webp' || outputFormat === 'jpeg'
-        ? `image/${outputFormat}`
-        : 'image/png'
+    const mime = `image/${detectImageFormat(item, outputFormat) ?? 'png'}`
     return `data:${mime};base64,${item.b64_json}`
   }
+  if (item.url) return item.url
   return null
 }
 
@@ -157,7 +312,8 @@ export function extractGeneratedImages(
   const createdAt = (response.created ?? Math.floor(Date.now() / 1000)) * 1000
 
   return items.reduce<GeneratedImage[]>((acc, item, index) => {
-    const src = resolveImageSrc(item, response.output_format)
+    const outputFormat = detectImageFormat(item, response.output_format)
+    const src = resolveImageSrc(item, outputFormat ?? request.output_format)
     if (!src) return acc
 
     acc.push({
@@ -172,7 +328,7 @@ export function extractGeneratedImages(
       actualSize: response.size,
       actualQuality: response.quality,
       actualModel: response.model,
-      actualOutputFormat: response.output_format,
+      actualOutputFormat: outputFormat,
       actualBackground: response.background,
       usage: response.usage,
       requestSnapshot: request,
@@ -202,8 +358,7 @@ export function getMaskSizeMismatch(
 }
 
 /**
- * 上游可能忽略请求参数并回传实际生效值（例如 gpt-image-2 会把 size
- * 改成自选尺寸），据此提示用户以免误判计费。
+ * Compare explicitly requested values with the upstream's reported result.
  */
 export function getParameterMismatches(
   image: GeneratedImage
@@ -239,10 +394,9 @@ export function buildDownloadFileName(image: GeneratedImage): string {
     .replaceAll(/[:.]/g, '-')
     .slice(0, 19)
   // 扩展名跟随上游实际返回的格式，避免 webp 存成 .png
-  const ext =
-    image.actualOutputFormat === 'jpeg'
-      ? 'jpg'
-      : (image.actualOutputFormat ?? 'png')
+  const format =
+    detectImageFormat({ url: image.src }, image.actualOutputFormat) ?? 'png'
+  const ext = format === 'jpeg' ? 'jpg' : format
   return `${image.model}-${stamp}.${ext}`
 }
 

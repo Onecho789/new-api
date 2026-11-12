@@ -31,6 +31,8 @@ export interface ImageGenerationRequest {
   output_format?: string
   background?: string
   output_compression?: number
+  frame_count?: number
+  frame_duration_ms?: number
 }
 
 /** 待上传的图片，objectUrl 用于预览，卸载时需 revoke */
@@ -43,7 +45,7 @@ export interface UploadedImage {
   height?: number
 }
 
-/** 上游返回的单张图像；b64_json 与 url 二者其一 */
+/** 上游返回的单张图像；部分服务会同时返回 b64_json 与 url */
 export interface ImageGenerationResultItem {
   b64_json?: string
   url?: string
@@ -83,24 +85,27 @@ export interface ImagePlaygroundConfig {
   prompt: string
   size: string
   quality: string
-  style: string
+  /** Desired workbench batch size; each upstream request generates one image. */
   n: number
-  responseFormat: string
   outputFormat: string
   background: string
-  outputCompression: number
+  frameCount: number
+  frameDurationMs: number
 }
 
 /** 仅在启用时随请求发送，避免上游因不支持的参数报错 */
 export interface ImageParameterEnabled {
   size: boolean
   quality: boolean
-  style: boolean
   n: boolean
-  responseFormat: boolean
   outputFormat: boolean
   background: boolean
-  outputCompression: boolean
+}
+
+/** 原始文件快照，用于本地历史恢复和重试，不依赖预览 URL */
+export interface ImageEditSnapshot {
+  images: File[]
+  mask: File | null
 }
 
 /** 一次生成结果，含请求快照便于对照上游实际生效值 */
@@ -121,6 +126,8 @@ export interface GeneratedImage {
   usage?: ImageGenerationUsage
   /** 完整请求快照，用于「重新生成」原样复跑 */
   requestSnapshot?: ImageGenerationRequest
+  editSnapshot?: ImageEditSnapshot
+  durationMs?: number
 }
 
 export interface SelectOption {

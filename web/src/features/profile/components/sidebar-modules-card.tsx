@@ -72,7 +72,7 @@ export function SidebarModulesCard() {
         },
         {
           key: 'image-playground',
-          title: t('Image Playground'),
+          title: t('Image workbench'),
           description: `${t('Text to image')} / ${t('Image to image')}`,
         },
         {

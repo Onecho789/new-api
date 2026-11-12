@@ -300,7 +300,7 @@ describe('combined task log sidebar entry', () => {
 })
 
 describe('image playground sidebar visibility', () => {
-  it('legacy settings expose Image Playground and preserve its independent toggle', () => {
+  it('legacy settings expose Image workbench and preserve its independent toggle', () => {
     const config = parseSidebarModulesAdmin(
       '{"chat":{"enabled":true,"playground":true,"chat":true}}'
     )
@@ -311,7 +311,7 @@ describe('image playground sidebar visibility', () => {
     const titles = result.current.flatMap((group) =>
       group.items.map((item) => item.title)
     )
-    expect(titles).not.toContain('Image Playground')
+    expect(titles).not.toContain('Image workbench')
     expect(titles).toContain('Playground')
   })
 
@@ -321,13 +321,13 @@ describe('image playground sidebar visibility', () => {
     [undefined, { chat: { enabled: true, 'image-playground': false } }],
     [undefined, { chat: { enabled: false } }],
   ])(
-    'admin or personal disablement hides Image Playground (%j, %j)',
+    'admin or personal disablement hides Image workbench (%j, %j)',
     (admin, user) => {
       const { result } = sidebarFor(admin, user)
       expect(
         result.current
           .flatMap((group) => group.items)
-          .some((item) => item.title === 'Image Playground')
+          .some((item) => item.title === 'Image workbench')
       ).toBe(false)
     }
   )
@@ -340,7 +340,7 @@ describe('image playground sidebar visibility', () => {
     const titles = result.current.flatMap((group) =>
       group.items.map((item) => item.title)
     )
-    expect(titles).toContain('Image Playground')
+    expect(titles).toContain('Image workbench')
     expect(titles).not.toContain('Playground')
   })
 })

@@ -20,18 +20,16 @@ export {
   buildDownloadFileName,
   buildEditFormData,
   buildRequestPayload,
-  clampCompression,
+  clampGifFrameCount,
+  clampGifFrameDuration,
   clampImageN,
   extractErrorMessage,
   extractGeneratedImages,
   getMaskSizeMismatch,
   getParameterMismatches,
-  supportsCompression,
+  normalizeImageRequestSnapshot,
 } from './image-utils'
-export {
-  downloadImage,
-  imageSrcToFile,
-} from './download-utils'
+export { downloadImage, imageSrcToFile } from './download-utils'
 export {
   acceptUploadFiles,
   createUploadedImage,

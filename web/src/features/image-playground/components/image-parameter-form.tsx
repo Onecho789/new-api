@@ -16,45 +16,50 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { TriangleAlertIcon } from 'lucide-react'
+import { useId, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
+import { Field, FieldGroup, FieldLabel } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
-import { Label } from '@/components/ui/label'
 import {
-  Select,
-  SelectContent,
-  SelectGroup,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select'
+  InputGroup,
+  InputGroupAddon,
+  InputGroupInput,
+} from '@/components/ui/input-group'
+import { Label } from '@/components/ui/label'
 import { Switch } from '@/components/ui/switch'
+import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
+import { toIntlLocale } from '@/i18n/languages'
+import { formatNumber } from '@/lib/format'
 
 import {
-  BACKGROUND_OPTIONS,
-  MAX_COMPRESSION,
+  IMAGE_ASPECT_OPTIONS,
+  IMAGE_RESOLUTION_OPTIONS,
+  GIF_FRAME_DURATION_STEP,
+  MAX_GIF_FRAME_COUNT,
+  MAX_GIF_FRAME_DURATION_MS,
+  MAX_IMAGE_DIMENSION,
   MAX_IMAGE_N,
-  MIN_COMPRESSION,
   MIN_IMAGE_N,
+  MIN_GIF_FRAME_COUNT,
+  MIN_GIF_FRAME_DURATION_MS,
   OUTPUT_FORMAT_OPTIONS,
   QUALITY_OPTIONS,
-  RESPONSE_FORMAT_OPTIONS,
-  SIZE_OPTIONS,
-  STYLE_OPTIONS,
 } from '../constants'
-import { clampCompression, clampImageN, supportsCompression } from '../lib'
-import type {
-  ImageParameterEnabled,
-  ImagePlaygroundConfig,
-  SelectOption,
-} from '../types'
+import {
+  clampImageN,
+  clampGifFrameCount,
+  clampGifFrameDuration,
+  imageSizeForPreset,
+  normalizeImageDimension,
+  readImageSizeSettings,
+} from '../lib/image-utils'
+import type { ImageParameterEnabled, ImagePlaygroundConfig } from '../types'
 
 type ImageParameterFormProps = {
+  compact?: boolean
   config: ImagePlaygroundConfig
   disabled?: boolean
-  /** 图生图下 size/quality 实测会被上游忽略，需要额外提示 */
-  showIgnoredNotes?: boolean
   onConfigChange: <K extends keyof ImagePlaygroundConfig>(
     key: K,
     value: ImagePlaygroundConfig[K]
@@ -66,277 +71,392 @@ type ImageParameterFormProps = {
   parameterEnabled: ImageParameterEnabled
 }
 
-type EnumFieldProps = {
-  description?: string
+function DimensionField(props: {
+  axis: 'width' | 'height'
+  value: number
+  align: boolean
   disabled?: boolean
-  enabled: boolean
-  /** 面向用户的本地化标签 */
-  label: string
-  /** 上游会忽略该参数时的提示，与 description 并列展示 */
-  ignoredNote?: string
-  /** 原始参数名，与 API 文档一致，便于对照排查 */
-  paramName: string
-  onEnabledChange: (value: boolean) => void
-  onValueChange: (value: string) => void
-  options: SelectOption[]
-  value: string
-}
-
-/** 带开关的枚举字段：关闭时该参数不进请求体 */
-function EnumField({
-  description,
-  disabled,
-  enabled,
-  label,
-  ignoredNote,
-  paramName,
-  onEnabledChange,
-  onValueChange,
-  options,
-  value,
-}: EnumFieldProps) {
+  onChange: (value: number) => void
+}) {
   const { t } = useTranslation()
-
   return (
-    <div className='space-y-1.5'>
-      <div className='flex items-center justify-between gap-2'>
-        <div className='flex items-baseline gap-1.5'>
-          <Label>{label}</Label>
-          <span className='text-muted-foreground font-mono text-xs'>
-            {paramName}
-          </span>
-        </div>
-        <Switch
-          checked={enabled}
-          disabled={disabled}
-          onCheckedChange={onEnabledChange}
-        />
-      </div>
-      <Select
-        items={options}
-        value={value}
-        onValueChange={(next) => next !== null && onValueChange(String(next))}
-      >
-        <SelectTrigger className='w-full' disabled={disabled || !enabled}>
-          <SelectValue />
-        </SelectTrigger>
-        <SelectContent alignItemWithTrigger={false}>
-          <SelectGroup>
-            {options.map((option) => (
-              <SelectItem key={option.value} value={option.value}>
-                <span className='font-mono'>{option.label}</span>
-                {option.descriptionKey ? (
-                  <span className='text-muted-foreground ml-2 text-xs'>
-                    {t(option.descriptionKey)}
-                  </span>
-                ) : null}
-              </SelectItem>
-            ))}
-          </SelectGroup>
-        </SelectContent>
-      </Select>
-      {description ? (
-        <p className='text-muted-foreground text-xs leading-4'>{description}</p>
-      ) : null}
-      {ignoredNote ? (
-        <p className='flex gap-1.5 text-xs leading-4 text-amber-600 dark:text-amber-500'>
-          <TriangleAlertIcon className='mt-0.5 size-3.5 shrink-0' />
-          <span>{ignoredNote}</span>
-        </p>
-      ) : null}
-    </div>
+    <InputGroup className='h-9 rounded-xl'>
+      <InputGroupAddon aria-hidden='true'>
+        {props.axis === 'width' ? 'W' : 'H'}
+      </InputGroupAddon>
+      <InputGroupInput
+        aria-label={props.axis === 'width' ? t('Width') : t('Height')}
+        defaultValue={props.value}
+        disabled={props.disabled}
+        key={props.value}
+        max={MAX_IMAGE_DIMENSION}
+        min={1}
+        type='number'
+        onBlur={(event) => {
+          const value =
+            event.currentTarget.value === ''
+              ? props.value
+              : Number(event.currentTarget.value)
+          const normalized = normalizeImageDimension(value, props.align)
+          event.currentTarget.value = String(normalized)
+          props.onChange(normalized)
+        }}
+        onKeyDown={(event) => {
+          if (event.key === 'Enter') {
+            event.preventDefault()
+            event.currentTarget.blur()
+          }
+        }}
+      />
+    </InputGroup>
   )
 }
 
-export function ImageParameterForm({
-  config,
-  disabled,
-  showIgnoredNotes,
-  onConfigChange,
-  onParameterEnabledChange,
-  parameterEnabled,
-}: ImageParameterFormProps) {
-  const { t } = useTranslation()
-  // 实测 gpt-image-2 两种模式都会忽略 size/quality，各给一句对应说明
-  const sizeIgnoredNote = showIgnoredNotes
-    ? t('Tested: gpt-image-2 picks the output size itself and ignores this.')
-    : undefined
-  const qualityIgnoredNote = showIgnoredNotes
-    ? t('Tested: gpt-image-2 always reports quality auto and ignores this.')
-    : undefined
-  const canCompress =
-    parameterEnabled.outputFormat && supportsCompression(config.outputFormat)
+export function ImageParameterForm(props: ImageParameterFormProps) {
+  const { t, i18n } = useTranslation()
+  const locale = toIntlLocale(i18n.resolvedLanguage || i18n.language)
+  const [alignDimensions, setAlignDimensions] = useState(true)
+  const alignToGrid = alignDimensions || props.config.outputFormat === 'gif'
+  const dimensions = readImageSizeSettings(props.config.size)
+  const fieldId = useId()
+  const canUseTransparency = ['png', 'webp'].includes(props.config.outputFormat)
+  const formatOptions = OUTPUT_FORMAT_OPTIONS.some(
+    (option) => option.value === props.config.outputFormat
+  )
+    ? OUTPUT_FORMAT_OPTIONS
+    : [
+        ...OUTPUT_FORMAT_OPTIONS,
+        { value: props.config.outputFormat, label: props.config.outputFormat },
+      ]
+
+  const applySize = (size: string) => {
+    props.onConfigChange('size', size)
+    props.onParameterEnabledChange('size', true)
+  }
 
   return (
-    <div className='space-y-4'>
-      <div className='space-y-1'>
-        <div className='text-sm font-medium'>{t('Parameters')}</div>
-        <p className='text-muted-foreground text-xs leading-4'>
-          {t('Only enabled parameters are sent with the request.')}
-        </p>
-      </div>
+    <FieldGroup className='gap-5'>
+      <p className='text-muted-foreground text-xs leading-5'>
+        {t('Parameter support depends on the selected model.')}
+      </p>
+      <Field>
+        <FieldLabel id={`${fieldId}-quality-label`}>{t('Quality')}</FieldLabel>
+        <ToggleGroup
+          aria-labelledby={`${fieldId}-quality-label`}
+          className='grid w-full grid-cols-4 gap-2'
+          disabled={props.disabled}
+          spacing={2}
+          value={[props.config.quality]}
+          variant='outline'
+          onValueChange={(values) => {
+            if (!values[0]) return
+            props.onConfigChange('quality', String(values[0]))
+            props.onParameterEnabledChange('quality', true)
+          }}
+        >
+          {QUALITY_OPTIONS.map((option) => (
+            <ToggleGroupItem
+              className='aria-pressed:border-foreground h-9 min-w-0 rounded-full px-1'
+              key={option.value}
+              value={option.value}
+            >
+              {t(option.descriptionKey ?? option.label)}
+            </ToggleGroupItem>
+          ))}
+        </ToggleGroup>
+      </Field>
 
-      <EnumField
-        description={t('Output image dimensions')}
-        disabled={disabled}
-        enabled={parameterEnabled.size}
-        ignoredNote={sizeIgnoredNote}
-        label={t('Image size')}
-        paramName='size'
-        onEnabledChange={(value) => onParameterEnabledChange('size', value)}
-        onValueChange={(value) => onConfigChange('size', value)}
-        options={SIZE_OPTIONS}
-        value={config.size}
-      />
-
-      <EnumField
-        description={t('Generation quality preset')}
-        disabled={disabled}
-        enabled={parameterEnabled.quality}
-        ignoredNote={qualityIgnoredNote}
-        label={t('Quality')}
-        paramName='quality'
-        onEnabledChange={(value) => onParameterEnabledChange('quality', value)}
-        onValueChange={(value) => onConfigChange('quality', value)}
-        options={QUALITY_OPTIONS}
-        value={config.quality}
-      />
-
-      <EnumField
-        description={t('Only supported by dall-e-3')}
-        disabled={disabled}
-        enabled={parameterEnabled.style}
-        ignoredNote={t(
-          'Tested: gpt-image-2 rejects this outright with Unknown parameter.'
-        )}
-        label={t('Art style')}
-        paramName='style'
-        onEnabledChange={(value) => onParameterEnabledChange('style', value)}
-        onValueChange={(value) => onConfigChange('style', value)}
-        options={STYLE_OPTIONS}
-        value={config.style}
-      />
-
-      <EnumField
-        description={t('File format of the returned image')}
-        disabled={disabled}
-        enabled={parameterEnabled.outputFormat}
-        label={t('Output format')}
-        paramName='output_format'
-        onEnabledChange={(value) =>
-          onParameterEnabledChange('outputFormat', value)
-        }
-        onValueChange={(value) => onConfigChange('outputFormat', value)}
-        options={OUTPUT_FORMAT_OPTIONS}
-        value={config.outputFormat}
-      />
-
-      {/* 压缩率仅在 output_format 选了 jpeg/webp 时才有意义 */}
-      <div className='space-y-1.5'>
-        <div className='flex items-center justify-between gap-2'>
-          <div className='flex items-baseline gap-1.5'>
-            <Label htmlFor='image-compression'>{t('Compression')}</Label>
-            <span className='text-muted-foreground font-mono text-xs'>
-              output_compression
-            </span>
+      <Field>
+        <div className='flex flex-wrap items-center justify-between gap-2'>
+          <FieldLabel>{t('Image size')}</FieldLabel>
+          <div className='flex items-center gap-2'>
+            <Label
+              className='text-muted-foreground text-xs'
+              htmlFor={`${fieldId}-align-dimensions`}
+            >
+              {t('Align to 16 pixels')}
+            </Label>
+            <Switch
+              id={`${fieldId}-align-dimensions`}
+              checked={alignToGrid}
+              disabled={props.disabled || props.config.outputFormat === 'gif'}
+              onCheckedChange={setAlignDimensions}
+            />
           </div>
-          <Switch
-            checked={parameterEnabled.outputCompression}
-            disabled={disabled || !canCompress}
-            onCheckedChange={(value) =>
-              onParameterEnabledChange('outputCompression', value)
+        </div>
+        <div className='grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-2'>
+          <DimensionField
+            axis='width'
+            value={dimensions.width}
+            align={alignToGrid}
+            disabled={props.disabled || dimensions.ratio === 'auto'}
+            onChange={(width) =>
+              applySize(
+                `${width}x${normalizeImageDimension(dimensions.height, alignToGrid)}`
+              )
+            }
+          />
+          <span aria-hidden='true' className='text-muted-foreground'>
+            ↔
+          </span>
+          <DimensionField
+            axis='height'
+            value={dimensions.height}
+            align={alignToGrid}
+            disabled={props.disabled || dimensions.ratio === 'auto'}
+            onChange={(height) =>
+              applySize(
+                `${normalizeImageDimension(dimensions.width, alignToGrid)}x${height}`
+              )
             }
           />
         </div>
-        <Input
-          disabled={
-            disabled || !canCompress || !parameterEnabled.outputCompression
-          }
-          id='image-compression'
-          max={MAX_COMPRESSION}
-          min={MIN_COMPRESSION}
-          type='number'
-          value={config.outputCompression}
-          onChange={(e) =>
-            onConfigChange(
-              'outputCompression',
-              clampCompression(Number(e.target.value))
-            )
-          }
-        />
-        <p className='text-muted-foreground text-xs leading-4'>
-          {canCompress
-            ? t(
-                'Compression quality ({{min}} - {{max}}), lower means smaller',
-                {
-                  max: MAX_COMPRESSION,
-                  min: MIN_COMPRESSION,
-                }
+      </Field>
+
+      <Field>
+        <FieldLabel id={`${fieldId}-resolution-label`}>
+          {t('Resolution')}
+        </FieldLabel>
+        <ToggleGroup
+          aria-labelledby={`${fieldId}-resolution-label`}
+          className='grid w-full grid-cols-4 gap-2'
+          disabled={props.disabled}
+          spacing={2}
+          value={[dimensions.resolution]}
+          variant='outline'
+          onValueChange={(values) => {
+            if (values[0]) {
+              applySize(
+                imageSizeForPreset(
+                  String(values[0]),
+                  dimensions.ratio === 'auto' ? '1:1' : dimensions.ratio
+                )
               )
-            : t('Enable output_format and pick jpeg or webp to use this.')}
-        </p>
-      </div>
+            }
+          }}
+        >
+          {IMAGE_RESOLUTION_OPTIONS.map((value) => (
+            <ToggleGroupItem
+              className='aria-pressed:border-foreground h-9 min-w-0 rounded-full px-1'
+              key={value}
+              value={value}
+            >
+              {value === 'auto' ? t('Auto') : value}
+            </ToggleGroupItem>
+          ))}
+        </ToggleGroup>
+      </Field>
 
-      <EnumField
-        description={t('Background of the generated image')}
-        disabled={disabled}
-        enabled={parameterEnabled.background}
-        label={t('Background')}
-        paramName='background'
-        onEnabledChange={(value) =>
-          onParameterEnabledChange('background', value)
-        }
-        onValueChange={(value) => onConfigChange('background', value)}
-        options={BACKGROUND_OPTIONS}
-        value={config.background}
-      />
+      <Field>
+        <FieldLabel id={`${fieldId}-aspect-label`}>
+          {t('Aspect ratio')}
+        </FieldLabel>
+        <ToggleGroup
+          aria-labelledby={`${fieldId}-aspect-label`}
+          className='grid w-full grid-cols-4 gap-2'
+          disabled={props.disabled}
+          spacing={2}
+          value={[dimensions.ratio]}
+          variant='outline'
+          onValueChange={(values) => {
+            if (values[0]) {
+              applySize(
+                imageSizeForPreset(dimensions.resolution, String(values[0]))
+              )
+            }
+          }}
+        >
+          {IMAGE_ASPECT_OPTIONS.map((option) => (
+            <ToggleGroupItem
+              className='aria-pressed:border-foreground h-[72px] min-w-0 flex-col gap-1.5 rounded-xl px-1'
+              key={option.value}
+              value={option.value}
+            >
+              <span
+                aria-hidden='true'
+                className='grid h-7 w-9 place-items-center'
+              >
+                {option.width && option.height ? (
+                  <span
+                    className='border-2 border-current'
+                    style={{
+                      width: Math.max(
+                        10,
+                        24 * Math.min(1, option.width / option.height)
+                      ),
+                      height: Math.max(
+                        10,
+                        24 * Math.min(1, option.height / option.width)
+                      ),
+                    }}
+                  />
+                ) : null}
+              </span>
+              {option.value === 'auto' ? t('Auto') : option.value}
+            </ToggleGroupItem>
+          ))}
+        </ToggleGroup>
+      </Field>
 
-      <EnumField
-        description={t('How image results are returned')}
-        disabled={disabled}
-        enabled={parameterEnabled.responseFormat}
-        label={t('Response format')}
-        paramName='response_format'
-        onEnabledChange={(value) =>
-          onParameterEnabledChange('responseFormat', value)
-        }
-        onValueChange={(value) => onConfigChange('responseFormat', value)}
-        options={RESPONSE_FORMAT_OPTIONS}
-        value={config.responseFormat}
-      />
-
-      <div className='space-y-1.5'>
-        <div className='flex items-center justify-between gap-2'>
-          <div className='flex items-baseline gap-1.5'>
-            <Label htmlFor='image-n'>{t('Image count')}</Label>
-            <span className='text-muted-foreground font-mono text-xs'>n</span>
-          </div>
-          <Switch
-            checked={parameterEnabled.n}
-            disabled={disabled}
-            onCheckedChange={(value) => onParameterEnabledChange('n', value)}
-          />
-        </div>
-        <Input
-          disabled={disabled || !parameterEnabled.n}
-          id='image-n'
-          max={MAX_IMAGE_N}
-          min={MIN_IMAGE_N}
-          type='number'
-          value={config.n}
-          onChange={(e) =>
-            onConfigChange('n', clampImageN(Number(e.target.value)))
+      <Field orientation='horizontal'>
+        <FieldLabel className='flex-1' htmlFor={`${fieldId}-transparent`}>
+          {t('Transparent background')}
+        </FieldLabel>
+        <Switch
+          id={`${fieldId}-transparent`}
+          checked={
+            canUseTransparency &&
+            props.parameterEnabled.background &&
+            props.config.background === 'transparent'
           }
+          disabled={props.disabled || !canUseTransparency}
+          onCheckedChange={(checked) => {
+            props.onConfigChange('background', checked ? 'transparent' : 'auto')
+            props.onParameterEnabledChange('background', checked)
+          }}
         />
-        <p className='flex gap-1.5 text-xs leading-4 text-red-600 dark:text-red-500'>
-          <TriangleAlertIcon className='mt-0.5 size-3.5 shrink-0' />
-          <span>
-            {t(
-              'Tested: gpt-image-2 only accepts n=1. Anything larger fails with Unknown parameter.'
-            )}
-          </span>
+      </Field>
+
+      <Field>
+        <FieldLabel id={`${fieldId}-format-label`}>
+          {t('Output format')}
+        </FieldLabel>
+        <ToggleGroup
+          aria-labelledby={`${fieldId}-format-label`}
+          className='grid w-full grid-cols-2 gap-2'
+          disabled={props.disabled}
+          spacing={2}
+          value={[props.config.outputFormat]}
+          variant='outline'
+          onValueChange={(values) => {
+            if (!values[0]) return
+            props.onConfigChange('outputFormat', String(values[0]))
+            props.onParameterEnabledChange('outputFormat', true)
+            if (values[0] === 'gif' && /^\d+x\d+$/.test(props.config.size)) {
+              applySize(
+                `${normalizeImageDimension(dimensions.width, true)}x${normalizeImageDimension(dimensions.height, true)}`
+              )
+            }
+            if (!['png', 'webp'].includes(String(values[0]))) {
+              props.onConfigChange('background', 'auto')
+              props.onParameterEnabledChange('background', false)
+            }
+          }}
+        >
+          {formatOptions.map((option) => (
+            <ToggleGroupItem
+              className='aria-pressed:border-foreground h-9 min-w-0 rounded-full px-1 uppercase'
+              key={option.value}
+              value={option.value}
+            >
+              {option.label}
+            </ToggleGroupItem>
+          ))}
+        </ToggleGroup>
+      </Field>
+
+      {props.config.outputFormat === 'gif' ? (
+        <div className='grid grid-cols-2 gap-3'>
+          <Field>
+            <FieldLabel htmlFor={`${fieldId}-frame-count`}>
+              {t('Frame count')}
+            </FieldLabel>
+            <Input
+              id={`${fieldId}-frame-count`}
+              className='h-9 rounded-full'
+              defaultValue={props.config.frameCount}
+              disabled={props.disabled}
+              key={props.config.frameCount}
+              min={MIN_GIF_FRAME_COUNT}
+              max={MAX_GIF_FRAME_COUNT}
+              type='number'
+              onBlur={(event) => {
+                const value = clampGifFrameCount(
+                  Number(event.currentTarget.value)
+                )
+                event.currentTarget.value = String(value)
+                props.onConfigChange('frameCount', value)
+              }}
+            />
+          </Field>
+          <Field>
+            <FieldLabel htmlFor={`${fieldId}-frame-duration`}>
+              {t('Frame duration (ms)')}
+            </FieldLabel>
+            <Input
+              id={`${fieldId}-frame-duration`}
+              className='h-9 rounded-full'
+              defaultValue={props.config.frameDurationMs}
+              disabled={props.disabled}
+              key={props.config.frameDurationMs}
+              min={MIN_GIF_FRAME_DURATION_MS}
+              max={MAX_GIF_FRAME_DURATION_MS}
+              step={GIF_FRAME_DURATION_STEP}
+              type='number'
+              onBlur={(event) => {
+                const value = clampGifFrameDuration(
+                  Number(event.currentTarget.value)
+                )
+                event.currentTarget.value = String(value)
+                props.onConfigChange('frameDurationMs', value)
+              }}
+            />
+          </Field>
+        </div>
+      ) : null}
+
+      <Field>
+        <FieldLabel id={`${fieldId}-count-label`}>
+          {t('Image count')}
+        </FieldLabel>
+        <ToggleGroup
+          aria-labelledby={`${fieldId}-count-label`}
+          className='grid w-full grid-cols-4 gap-2'
+          disabled={props.disabled}
+          spacing={2}
+          value={[String(props.config.n)]}
+          variant='outline'
+          onValueChange={(values) => {
+            if (!values[0]) return
+            props.onConfigChange('n', clampImageN(Number(values[0])))
+            props.onParameterEnabledChange('n', true)
+          }}
+        >
+          {Array.from({ length: MAX_IMAGE_N }, (_, index) => index + 1).map(
+            (value) => (
+              <ToggleGroupItem
+                className='aria-pressed:border-foreground h-9 min-w-0 rounded-full px-1'
+                key={value}
+                value={String(value)}
+              >
+                {formatNumber(value, locale)}
+              </ToggleGroupItem>
+            )
+          )}
+          <Input
+            aria-label={t('Custom image count')}
+            className='col-span-2 h-9 rounded-full text-center'
+            defaultValue={props.config.n}
+            disabled={props.disabled}
+            key={props.config.n}
+            max={MAX_IMAGE_N}
+            min={MIN_IMAGE_N}
+            type='number'
+            onBlur={(event) => {
+              const value = clampImageN(Number(event.currentTarget.value))
+              event.currentTarget.value = String(value)
+              props.onConfigChange('n', value)
+              props.onParameterEnabledChange('n', true)
+            }}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter') event.currentTarget.blur()
+            }}
+          />
+        </ToggleGroup>
+        <p className='text-muted-foreground text-xs leading-4'>
+          {t('Each image is billed separately.')}
         </p>
-      </div>
-    </div>
+      </Field>
+    </FieldGroup>
   )
 }

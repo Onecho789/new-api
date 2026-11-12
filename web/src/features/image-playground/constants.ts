@@ -30,116 +30,118 @@ export const IMAGE_EDIT_ENDPOINT = '/v1/images/edits'
 
 export const USER_MODELS_ENDPOINT = '/api/user/models'
 
-export const ACCEPTED_IMAGE_TYPES = 'image/png,image/jpeg,image/webp'
+export const ACCEPTED_IMAGE_TYPES = 'image/png,image/jpeg,image/webp,image/gif'
 
 /** 单张上传图片大小上限，超过时上游通常直接拒绝 */
 export const MAX_UPLOAD_SIZE_BYTES = 25 * 1024 * 1024
 
 export const MAX_UPLOAD_IMAGES = 10
 
-/**
- * 枚举选项的 descriptionKey 用于在下拉里补一句中文说明，
- * label 保留原始参数值以便与 API 文档对照。
- */
-export const SIZE_OPTIONS: SelectOption[] = [
-  { label: '1024x1024', value: '1024x1024', descriptionKey: 'Square' },
-  { label: '1024x1536', value: '1024x1536', descriptionKey: 'Portrait' },
-  { label: '1536x1024', value: '1536x1024', descriptionKey: 'Landscape' },
-  { label: '1024x1792', value: '1024x1792', descriptionKey: 'Tall portrait' },
-  { label: '1792x1024', value: '1792x1024', descriptionKey: 'Wide landscape' },
-  { label: '512x512', value: '512x512', descriptionKey: 'Small square' },
-  { label: '256x256', value: '256x256', descriptionKey: 'Tiny square' },
-  { label: 'auto', value: 'auto', descriptionKey: 'Chosen by upstream' },
-]
-
 export const QUALITY_OPTIONS: SelectOption[] = [
-  { label: 'standard', value: 'standard', descriptionKey: 'Standard' },
-  { label: 'hd', value: 'hd', descriptionKey: 'High definition' },
-  { label: 'low', value: 'low', descriptionKey: 'Low, cheapest' },
+  { label: 'auto', value: 'auto', descriptionKey: 'Auto' },
+  { label: 'high', value: 'high', descriptionKey: 'High' },
   { label: 'medium', value: 'medium', descriptionKey: 'Medium' },
-  { label: 'high', value: 'high', descriptionKey: 'High, most expensive' },
-  { label: 'auto', value: 'auto', descriptionKey: 'Chosen by upstream' },
+  { label: 'low', value: 'low', descriptionKey: 'Low' },
 ]
 
-export const STYLE_OPTIONS: SelectOption[] = [
-  { label: 'vivid', value: 'vivid', descriptionKey: 'Vivid, dramatic' },
-  { label: 'natural', value: 'natural', descriptionKey: 'Natural, realistic' },
-]
+export const IMAGE_RESOLUTION_OPTIONS = ['1k', '2k', '4k', 'auto'] as const
+export const IMAGE_ASPECT_OPTIONS = [
+  { value: '1:1', width: 1, height: 1 },
+  { value: '2:3', width: 2, height: 3 },
+  { value: '3:2', width: 3, height: 2 },
+  { value: '4:3', width: 4, height: 3 },
+  { value: '3:4', width: 3, height: 4 },
+  { value: '16:9', width: 16, height: 9 },
+  { value: '9:16', width: 9, height: 16 },
+  { value: '21:9', width: 21, height: 9 },
+  { value: '9:21', width: 9, height: 21 },
+  { value: 'auto', width: 0, height: 0 },
+] as const
 
-export const RESPONSE_FORMAT_OPTIONS: SelectOption[] = [
-  { label: 'url', value: 'url', descriptionKey: 'Temporary link' },
-  { label: 'b64_json', value: 'b64_json', descriptionKey: 'Inline base64' },
-]
+/** Presets match the reference workbench; provider support is model specific. */
+export const IMAGE_SIZE_PRESETS: Record<string, Record<string, string>> = {
+  '1k': {
+    '1:1': '1024x1024',
+    '2:3': '1024x1536',
+    '3:2': '1536x1024',
+    '4:3': '1024x768',
+    '3:4': '768x1024',
+    '16:9': '1536x864',
+    '9:16': '864x1536',
+    '21:9': '2016x864',
+    '9:21': '864x2016',
+  },
+  '2k': {
+    '1:1': '2048x2048',
+    '2:3': '1360x2048',
+    '3:2': '2048x1360',
+    '4:3': '2048x1536',
+    '3:4': '1536x2048',
+    '16:9': '2048x1152',
+    '9:16': '1152x2048',
+    '21:9': '2688x1152',
+    '9:21': '1152x2688',
+  },
+  '4k': {
+    '1:1': '2880x2880',
+    '2:3': '2336x3520',
+    '3:2': '3520x2336',
+    '4:3': '3312x2480',
+    '3:4': '2480x3312',
+    '16:9': '3840x2160',
+    '9:16': '2160x3840',
+    '21:9': '3840x1648',
+    '9:21': '1648x3840',
+  },
+}
 
-/** 实测有效：返回体的 output_format 会跟着变，jpeg/webp 体积远小于 png */
+export const IMAGE_DIMENSION_STEP = 16
+export const MAX_IMAGE_DIMENSION = 3840
+
+/** Output options are passed through; support depends on the selected model. */
 export const OUTPUT_FORMAT_OPTIONS: SelectOption[] = [
   { label: 'png', value: 'png', descriptionKey: 'Lossless, largest' },
-  { label: 'jpeg', value: 'jpeg', descriptionKey: 'Compressed, smallest' },
-  { label: 'webp', value: 'webp', descriptionKey: 'Compressed, good quality' },
+  { label: 'gif', value: 'gif', descriptionKey: 'GIF image' },
 ]
 
-/** 实测有效：opaque 会回显。transparent 被该模型拒绝，故不提供 */
-export const BACKGROUND_OPTIONS: SelectOption[] = [
-  { label: 'auto', value: 'auto', descriptionKey: 'Chosen by upstream' },
-  { label: 'opaque', value: 'opaque', descriptionKey: 'Solid background' },
-]
-
-/** 压缩率仅对 jpeg/webp 有效，png 传 <100 会被上游拒绝 */
-export const COMPRESSION_ONLY_FORMATS = new Set(['jpeg', 'webp'])
-
-export const MIN_COMPRESSION = 1
-export const MAX_COMPRESSION = 100
+/** Official animated GIF controls; the duration follows the guide's UI range. */
+export const MIN_GIF_FRAME_COUNT = 2
+export const MAX_GIF_FRAME_COUNT = 16
+export const DEFAULT_GIF_FRAME_COUNT = 9
+export const MIN_GIF_FRAME_DURATION_MS = 20
+export const MAX_GIF_FRAME_DURATION_MS = 2000
+export const GIF_FRAME_DURATION_STEP = 10
+export const DEFAULT_GIF_FRAME_DURATION_MS = 200
 
 export const MIN_IMAGE_N = 1
 
-/**
- * 实测 gpt-image-2 只接受 n=1，n=2/3 均报
- * "Unknown parameter: 'tools[0].n'"，故上限收到 1。
- */
-export const MAX_IMAGE_N = 1
+/** Desired workbench batch size, each HTTP request asks for one image. */
+export const MAX_IMAGE_N = 10
 
 export const DEFAULT_CONFIG: ImagePlaygroundConfig = {
   mode: 'generate',
   model: 'gpt-image-2',
   prompt: '',
-  size: '1024x1024',
-  quality: 'standard',
-  style: 'vivid',
+  size: '1:1',
+  quality: 'auto',
   n: 1,
-  responseFormat: 'url',
   outputFormat: 'png',
-  background: 'auto',
-  outputCompression: 80,
+  background: '',
+  frameCount: DEFAULT_GIF_FRAME_COUNT,
+  frameDurationMs: DEFAULT_GIF_FRAME_DURATION_MS,
 }
 
-/**
- * style 与 response_format 默认关闭：gpt-image 系列不支持这两个参数，
- * style 传了直接报 Unknown parameter，仅 dall-e-3 需要时再手动开启。
- * size/quality 也默认关闭：实测 gpt-image-2 文生图同样会忽略它们
- * （四组组合均返回 1254x1254 / auto / 229 token），开着会让人误判可控性。
- * outputFormat/background 实测有效但默认保持上游默认值，需要时再开。
- */
+/** Visible controls apply immediately; transparent background is opt-in. */
 export const DEFAULT_PARAMETER_ENABLED: ImageParameterEnabled = {
-  size: false,
-  quality: false,
-  style: false,
+  size: true,
+  quality: true,
   n: true,
-  responseFormat: false,
-  outputFormat: false,
+  outputFormat: true,
   background: false,
-  outputCompression: false,
 }
 
-/** 图生图同上，且上游还会按输入图自行决定输出尺寸 */
 export const EDIT_MODE_PARAMETER_ENABLED: ImageParameterEnabled = {
-  size: false,
-  quality: false,
-  style: false,
-  n: true,
-  responseFormat: false,
-  outputFormat: false,
-  background: false,
-  outputCompression: false,
+  ...DEFAULT_PARAMETER_ENABLED,
 }
 
 export const STORAGE_KEYS = {

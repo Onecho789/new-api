@@ -122,6 +122,7 @@ Inside `relaykit/`, use `kitutil.*` from `relaykit/relayconvert/kitutil/json.go`
 
 **JavaScript task plugins (mandatory):**
 
+- xAI video uses only the upstream-synced `plugins/tasks/xai/plugin.js`. Keep that plugin and its tests aligned with upstream; do not introduce a separate local xAI/Grok task plugin or restore one from historical backups.
 - Before implementing, modifying, or reviewing JavaScript task plugins or their host API/runtime, MUST read [Task Plugin API v1](docs/plugin-api/v1.md), including its description writing and translation conventions. When changing the plugin contract, also check `docs/plugin-api/v1.schema.json` and `docs/plugin-api/v1.d.ts` for consistency.
 - For numeric billing fields in `usageSchema` and `usageProfiles[].schema`, `description` MUST name the **billing subject + unit price**, because it labels the price input in the UI. For example, `image_count` uses `Image generation unit price` / `图片生成单价`, not `Generated image count` / `生成图片张数`; `seconds` uses `Video generation unit price` / `视频生成单价`. The field value remains a usage quantity, not a price.
 - Put units in `unit`. Keep protocol limits, usage sources, defaults, estimation, and settlement details in code comments or technical documentation. Descriptions must be short, equivalent across languages, and free of numeric prices and trailing punctuation. Follow the API document's separate wording rules for actions, booleans, and other enum conditions.

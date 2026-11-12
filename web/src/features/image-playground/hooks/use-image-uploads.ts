@@ -115,6 +115,18 @@ export function useImageUploads() {
     })
   }, [])
 
+  const moveImage = useCallback((id: string, direction: -1 | 1) => {
+    setImages((prev) => {
+      const index = prev.findIndex((image) => image.id === id)
+      const nextIndex = index + direction
+      if (index < 0 || nextIndex < 0 || nextIndex >= prev.length) return prev
+      const reordered = [...prev]
+      reordered[index] = prev[nextIndex]
+      reordered[nextIndex] = prev[index]
+      return reordered
+    })
+  }, [])
+
   const clearImages = useCallback(() => {
     setImages((prev) => {
       revokeUploadedImages(prev)
@@ -182,6 +194,7 @@ export function useImageUploads() {
     addImages,
     replaceImages,
     removeImage,
+    moveImage,
     clearImages,
     setMaskFile,
     clearMask,

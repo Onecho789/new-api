@@ -23,7 +23,11 @@ import {
   STORAGE_KEYS,
 } from '../constants'
 import type { ImageParameterEnabled, ImagePlaygroundConfig } from '../types'
-import { clampImageN } from './image-utils'
+import {
+  clampGifFrameCount,
+  clampGifFrameDuration,
+  clampImageN,
+} from './image-utils'
 
 function readJSON<T>(key: string, fallback: T): T {
   try {
@@ -45,41 +49,106 @@ function writeJSON(key: string, value: unknown): void {
   }
 }
 
+/** Select only visible controls; older hidden settings must not survive migration. */
+export function normalizeImagePlaygroundConfig(
+  config: Partial<ImagePlaygroundConfig>
+): ImagePlaygroundConfig {
+  let quality = config.quality
+  if (quality === 'hd') quality = 'medium'
+  if (!quality || !['auto', 'low', 'medium', 'high'].includes(quality)) {
+    quality = 'auto'
+  }
+  return {
+    mode: config.mode === 'edit' ? 'edit' : 'generate',
+    model:
+      typeof config.model === 'string' ? config.model : DEFAULT_CONFIG.model,
+    size: typeof config.size === 'string' ? config.size : DEFAULT_CONFIG.size,
+    quality,
+    n: clampImageN(config.n ?? DEFAULT_CONFIG.n),
+    outputFormat:
+      config.outputFormat &&
+      ['png', 'jpeg', 'webp', 'gif'].includes(config.outputFormat)
+        ? config.outputFormat
+        : 'png',
+    background: config.background === 'transparent' ? 'transparent' : '',
+    frameCount: clampGifFrameCount(
+      config.frameCount ?? DEFAULT_CONFIG.frameCount
+    ),
+    frameDurationMs: clampGifFrameDuration(
+      config.frameDurationMs ?? DEFAULT_CONFIG.frameDurationMs
+    ),
+    prompt: typeof config.prompt === 'string' ? config.prompt : '',
+  }
+}
+
+export function normalizeImageParameterEnabled(
+  enabled: Partial<ImageParameterEnabled>
+): ImageParameterEnabled {
+  return {
+    ...DEFAULT_PARAMETER_ENABLED,
+    background: enabled.background === true,
+  }
+}
+
 export function getInitialConfig(): ImagePlaygroundConfig {
-  // prompt 不做持久化，避免上次的提示词意外复用
-  const stored = readJSON<ImagePlaygroundConfig>(
+  const stored = readJSON<ImagePlaygroundConfig & { schemaVersion?: number }>(
     STORAGE_KEYS.CONFIG,
     DEFAULT_CONFIG
   )
-  // 旧缓存里可能存着超出新上限的 n（曾经允许到 10），读取时收敛
-  return { ...stored, n: clampImageN(stored.n), prompt: '' }
+  // Migrate the previous stock preset, while keeping explicit custom dimensions.
+  const legacyDefaults =
+    !stored.schemaVersion &&
+    stored.size === '1024x1024' &&
+    stored.quality === 'standard'
+  return normalizeImagePlaygroundConfig({
+    ...stored,
+    size: legacyDefaults ? DEFAULT_CONFIG.size : stored.size,
+    mode: 'generate',
+    prompt: '',
+    // A fresh page always starts in PNG. History restoration and explicit
+    // changes during this session still retain their selected output format.
+    outputFormat: 'png',
+  })
 }
 
 export function saveConfig(config: ImagePlaygroundConfig): void {
-  const { prompt: _prompt, ...rest } = config
-  writeJSON(STORAGE_KEYS.CONFIG, rest)
+  const {
+    prompt: _prompt,
+    outputFormat: _outputFormat,
+    ...rest
+  } = normalizeImagePlaygroundConfig(config)
+  writeJSON(STORAGE_KEYS.CONFIG, { ...rest, schemaVersion: 3 })
 }
 
 export function getInitialParameterEnabled(): ImageParameterEnabled {
-  return readJSON<ImageParameterEnabled>(
+  const stored = readJSON<ImageParameterEnabled>(
     STORAGE_KEYS.PARAMETER_ENABLED,
     DEFAULT_PARAMETER_ENABLED
   )
+  return normalizeImageParameterEnabled(stored)
 }
 
 export function saveParameterEnabled(value: ImageParameterEnabled): void {
-  writeJSON(STORAGE_KEYS.PARAMETER_ENABLED, value)
+  writeJSON(
+    STORAGE_KEYS.PARAMETER_ENABLED,
+    normalizeImageParameterEnabled(value)
+  )
 }
 
 export function getInitialEditParameterEnabled(): ImageParameterEnabled {
-  return readJSON<ImageParameterEnabled>(
-    STORAGE_KEYS.EDIT_PARAMETER_ENABLED,
-    EDIT_MODE_PARAMETER_ENABLED
+  return normalizeImageParameterEnabled(
+    readJSON<ImageParameterEnabled>(
+      STORAGE_KEYS.EDIT_PARAMETER_ENABLED,
+      EDIT_MODE_PARAMETER_ENABLED
+    )
   )
 }
 
 export function saveEditParameterEnabled(value: ImageParameterEnabled): void {
-  writeJSON(STORAGE_KEYS.EDIT_PARAMETER_ENABLED, value)
+  writeJSON(
+    STORAGE_KEYS.EDIT_PARAMETER_ENABLED,
+    normalizeImageParameterEnabled(value)
+  )
 }
 
 /**

@@ -18,7 +18,11 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { describe, expect, it } from 'vitest'
 
-import { DEFAULT_CONFIG, DEFAULT_PARAMETER_ENABLED } from '../../constants'
+import {
+  DEFAULT_CONFIG,
+  DEFAULT_PARAMETER_ENABLED,
+  STORAGE_KEYS,
+} from '../../constants'
 import type {
   ImageParameterEnabled,
   ImagePlaygroundConfig,
@@ -28,15 +32,21 @@ import {
   buildDownloadFileName,
   buildEditFormData,
   buildRequestPayload,
-  clampCompression,
+  clampGifFrameCount,
+  clampGifFrameDuration,
   clampImageN,
   extractErrorMessage,
   extractGeneratedImages,
   getMaskSizeMismatch,
   getParameterMismatches,
+  normalizeImageRequestSnapshot,
   resolveImageSrc,
-  supportsCompression,
 } from '../image-utils'
+import {
+  getInitialConfig,
+  getInitialParameterEnabled,
+  saveConfig,
+} from '../storage'
 
 function makeConfig(
   overrides: Partial<ImagePlaygroundConfig> = {}
@@ -54,7 +64,12 @@ describe('buildRequestPayload', () => {
   it('omits parameters that are disabled', () => {
     const payload = buildRequestPayload(
       makeConfig(),
-      makeEnabled({ n: false, quality: false, size: false })
+      makeEnabled({
+        n: false,
+        quality: false,
+        size: false,
+        outputFormat: false,
+      })
     )
 
     expect(payload).toEqual({ model: 'gpt-image-2', prompt: 'a red apple' })
@@ -63,93 +78,202 @@ describe('buildRequestPayload', () => {
     expect(payload).not.toHaveProperty('n')
   })
 
-  it('includes enabled parameters and trims text fields', () => {
+  it('includes visible controls and ignores legacy advanced flags while trimming text', () => {
     const payload = buildRequestPayload(
-      makeConfig({ model: '  gpt-image-2  ', prompt: '  a cat  ' }),
-      makeEnabled({
-        quality: true,
-        responseFormat: true,
-        size: true,
-        style: true,
-      })
+      makeConfig({
+        model: '  gpt-image-2  ',
+        prompt: '  a cat  ',
+        quality: 'high',
+        size: '2048x1152',
+      }),
+      Object.assign(
+        makeEnabled({
+          quality: true,
+          size: true,
+        }),
+        { responseFormat: true, style: true, outputCompression: true }
+      )
     )
 
     expect(payload).toEqual({
       model: 'gpt-image-2',
       n: 1,
       prompt: 'a cat',
-      quality: 'standard',
-      response_format: 'url',
-      size: '1024x1024',
-      style: 'vivid',
+      quality: 'high',
+      size: '2048x1152',
+      output_format: 'png',
     })
   })
 
-  it('only sends model, prompt and n by default', () => {
-    // 实测 gpt-image-2 会忽略 size/quality，且不支持 style/response_format
-    const payload = buildRequestPayload(makeConfig(), makeEnabled())
+  it('keeps automatic quality and size upstream controlled by omitting them', () => {
+    const payload = buildRequestPayload(
+      makeConfig({ size: 'auto' }),
+      makeEnabled()
+    )
 
     expect(payload).toEqual({
       model: 'gpt-image-2',
       n: 1,
       prompt: 'a red apple',
+      output_format: 'png',
     })
   })
 
-  it('clamps n to 1 because the model rejects anything larger', () => {
+  it('sends one image per request even when the desired batch contains five images', () => {
     const payload = buildRequestPayload(makeConfig({ n: 5 }), makeEnabled())
 
     expect(payload.n).toBe(1)
   })
 
+  it('maps automatic resolution with a selected ratio through quality into concrete size', () => {
+    const payload = buildRequestPayload(
+      makeConfig({ size: '16:9', quality: 'high' }),
+      makeEnabled()
+    )
+    expect(payload.size).toBe('3840x2160')
+    expect(payload).not.toHaveProperty('resolution')
+    expect(payload).not.toHaveProperty('aspect_ratio')
+  })
+
+  it('forwards GIF animation fields without transparent background in JSON and multipart', () => {
+    const payload = buildRequestPayload(
+      makeConfig({ outputFormat: 'gif', background: 'transparent' }),
+      makeEnabled({ background: true })
+    )
+    expect(payload.output_format).toBe('gif')
+    expect(payload.background).toBeUndefined()
+    expect(payload.frame_count).toBe(9)
+    expect(payload.frame_duration_ms).toBe(200)
+    const form = buildEditFormData(
+      payload,
+      [{ file: new File(['GIF89a'], 'reference.gif', { type: 'image/gif' }) }],
+      null
+    )
+    expect(form.get('output_format')).toBe('gif')
+    expect(form.get('background')).toBeNull()
+    expect(form.get('frame_count')).toBe('9')
+    expect(form.get('frame_duration_ms')).toBe('200')
+  })
+
   it('includes output_format and background when enabled', () => {
     const payload = buildRequestPayload(
-      makeConfig({ background: 'opaque', outputFormat: 'webp' }),
+      makeConfig({ background: 'transparent', outputFormat: 'webp' }),
       makeEnabled({ background: true, outputFormat: true })
     )
 
     expect(payload.output_format).toBe('webp')
-    expect(payload.background).toBe('opaque')
+    expect(payload.background).toBe('transparent')
   })
 
-  it('sends output_compression only for jpeg and webp', () => {
-    const webp = buildRequestPayload(
-      makeConfig({ outputCompression: 60, outputFormat: 'webp' }),
-      makeEnabled({ outputCompression: true, outputFormat: true })
-    )
-    const png = buildRequestPayload(
-      makeConfig({ outputCompression: 60, outputFormat: 'png' }),
-      makeEnabled({ outputCompression: true, outputFormat: true })
-    )
-    // png 传 <100 会被上游拒绝，必须省略
-    expect(webp.output_compression).toBe(60)
-    expect(png.output_compression).toBeUndefined()
-  })
-
-  it('omits output_compression when output_format is disabled', () => {
+  it('never sends removed advanced controls even if old stored values are enabled', () => {
     const payload = buildRequestPayload(
-      makeConfig({ outputCompression: 60, outputFormat: 'webp' }),
-      makeEnabled({ outputCompression: true, outputFormat: false })
+      Object.assign(makeConfig({ outputFormat: 'webp' }), {
+        outputCompression: 60,
+        style: 'vivid',
+        responseFormat: 'url',
+      }),
+      Object.assign(makeEnabled(), {
+        outputCompression: true,
+        style: true,
+        responseFormat: true,
+      })
     )
+    expect(payload).not.toHaveProperty('output_compression')
+    expect(payload).not.toHaveProperty('style')
+    expect(payload).not.toHaveProperty('response_format')
+  })
 
-    expect(payload.output_compression).toBeUndefined()
+  it('uses reference base64 negotiation for non-GPT models and preserves GPT aliases unchanged', () => {
+    expect(
+      buildRequestPayload(makeConfig({ model: 'dall-e-3' }), makeEnabled())
+        .response_format
+    ).toBe('b64_json')
+    const alias = buildRequestPayload(
+      makeConfig({ model: 'gpt-images-2.6' }),
+      makeEnabled()
+    )
+    expect(alias.model).toBe('gpt-images-2.6')
+    expect(alias).not.toHaveProperty('response_format')
+  })
+
+  it('omits animation-only fields from PNG and JPEG requests', () => {
+    for (const outputFormat of ['png', 'jpeg']) {
+      const payload = buildRequestPayload(
+        makeConfig({ outputFormat, frameCount: 12, frameDurationMs: 600 }),
+        makeEnabled()
+      )
+      expect(payload).not.toHaveProperty('frame_count')
+      expect(payload).not.toHaveProperty('frame_duration_ms')
+      const form = buildEditFormData(payload, [], null)
+      expect(form.get('frame_count')).toBeNull()
+      expect(form.get('frame_duration_ms')).toBeNull()
+    }
+  })
+
+  it('clamps GIF controls to the documented ranges and rounds duration to ten milliseconds', () => {
+    expect(clampGifFrameCount(1)).toBe(2)
+    expect(clampGifFrameCount(99)).toBe(16)
+    expect(clampGifFrameCount(Number.NaN)).toBe(9)
+    expect(clampGifFrameDuration(1)).toBe(20)
+    expect(clampGifFrameDuration(9999)).toBe(2000)
+    expect(clampGifFrameDuration(235)).toBe(240)
+    expect(clampGifFrameDuration(Number.NaN)).toBe(200)
+    const payload = buildRequestPayload(
+      makeConfig({ outputFormat: 'gif', frameCount: 99, frameDurationMs: 235 }),
+      makeEnabled()
+    )
+    expect(payload).toMatchObject({ frame_count: 16, frame_duration_ms: 240 })
+  })
+
+  it('aligns only explicit GIF frame sizes to sixteen while preserving automatic sizing', () => {
+    const payload = buildRequestPayload(
+      makeConfig({ outputFormat: 'gif', size: '513x769' }),
+      makeEnabled()
+    )
+    expect(payload.size).toBe('528x784')
+    expect(
+      buildRequestPayload(
+        makeConfig({ outputFormat: 'gif', size: 'auto' }),
+        makeEnabled()
+      )
+    ).not.toHaveProperty('size')
   })
 })
 
-describe('clampCompression', () => {
-  it('keeps values inside 1-100', () => {
-    expect(clampCompression(0)).toBe(1)
-    expect(clampCompression(60)).toBe(60)
-    expect(clampCompression(120)).toBe(100)
-    expect(clampCompression(Number.NaN)).toBe(100)
+describe('historical request snapshots', () => {
+  it('preserves previously executed non-GIF protocol options while excluding GIF-only fields', () => {
+    const request = {
+      model: 'gpt-image-2',
+      prompt: 'retry',
+      output_format: 'webp',
+      style: 'natural',
+      response_format: 'url',
+      output_compression: 60,
+    }
+    const normalized = normalizeImageRequestSnapshot({
+      ...request,
+      frame_count: 9,
+      frame_duration_ms: 200,
+    })
+    expect(normalized).toEqual(request)
+    const form = buildEditFormData(normalized, [], null)
+    expect(form.get('style')).toBe('natural')
+    expect(form.get('response_format')).toBe('url')
+    expect(form.get('output_compression')).toBe('60')
   })
-})
 
-describe('supportsCompression', () => {
-  it('is true only for jpeg and webp', () => {
-    expect(supportsCompression('jpeg')).toBe(true)
-    expect(supportsCompression('webp')).toBe(true)
-    expect(supportsCompression('png')).toBe(false)
+  it('rejects a historical GIF mask before sending an edit request', () => {
+    expect(() =>
+      buildEditFormData(
+        {
+          model: 'gpt-images-2.6',
+          prompt: 'retry animation',
+          output_format: 'gif',
+        },
+        [],
+        { file: new File(['mask'], 'mask.png', { type: 'image/png' }) }
+      )
+    ).toThrow('GIF output does not support masks')
   })
 })
 
@@ -176,18 +300,55 @@ describe('buildDownloadFileName', () => {
 })
 
 describe('clampImageN', () => {
-  it('clamps everything to 1 since the model only accepts n=1', () => {
+  it('bounds the desired batch count to whole numbers from one to ten', () => {
     expect(clampImageN(0)).toBe(1)
     expect(clampImageN(-5)).toBe(1)
-    expect(clampImageN(99)).toBe(1)
+    expect(clampImageN(99)).toBe(10)
     expect(clampImageN(Number.NaN)).toBe(1)
-    expect(clampImageN(2.6)).toBe(1)
+    expect(clampImageN(2.6)).toBe(2)
     expect(clampImageN(1)).toBe(1)
   })
 })
 
 describe('resolveImageSrc', () => {
-  it('prefers url and falls back to base64', () => {
+  it('recognizes GIF bytes without output_format and preserves the animated data for downloads', () => {
+    const base64 = btoa(`GIF89a${'\0'.repeat(30)}`)
+    const [image] = extractGeneratedImages(
+      { data: [{ b64_json: base64 }] },
+      { model: 'gpt-images-2.6', prompt: 'animation' }
+    )
+    expect(image.src).toBe(`data:image/gif;base64,${base64}`)
+    expect(image.actualOutputFormat).toBe('gif')
+    expect(buildDownloadFileName(image)).toMatch(/\.gif$/)
+  })
+
+  it('uses known file signatures instead of an incorrect requested output format', () => {
+    expect(
+      resolveImageSrc({ b64_json: btoa(`GIF87a${'\0'.repeat(30)}`) }, 'png')
+    ).toMatch(/^data:image\/gif;/)
+    expect(resolveImageSrc({ b64_json: '/9j/AAAA' })).toMatch(
+      /^data:image\/jpeg;/
+    )
+    expect(resolveImageSrc({ b64_json: btoa('RIFF0000WEBPxxxx') })).toMatch(
+      /^data:image\/webp;/
+    )
+    expect(resolveImageSrc({ b64_json: 'AAAA' }, 'gif')).toBe(
+      'data:image/gif;base64,AAAA'
+    )
+  })
+  it('uses base64 when the response also includes an HTTP image URL', () => {
+    const base64 =
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aEYoAAAAASUVORK5CYII='
+
+    expect(
+      resolveImageSrc({
+        b64_json: base64,
+        url: 'http://192.0.2.1:3002/images/generated.png',
+      })
+    ).toBe(`data:image/png;base64,${base64}`)
+  })
+
+  it('resolves responses containing only one image source', () => {
     expect(resolveImageSrc({ url: 'https://example.com/a.png' })).toBe(
       'https://example.com/a.png'
     )
@@ -195,6 +356,69 @@ describe('resolveImageSrc', () => {
       'data:image/png;base64,AAAA'
     )
     expect(resolveImageSrc({})).toBeNull()
+  })
+
+  it('falls back to the URL when base64 is empty', () => {
+    expect(
+      resolveImageSrc({ b64_json: '', url: 'https://example.com/a.png' })
+    ).toBe('https://example.com/a.png')
+  })
+})
+
+describe('playground configuration migration', () => {
+  it('migrates the old fixed defaults and disabled common controls to automatic settings', () => {
+    localStorage.setItem(
+      STORAGE_KEYS.CONFIG,
+      JSON.stringify({
+        ...DEFAULT_CONFIG,
+        quality: 'standard',
+        size: '1024x1024',
+        prompt: 'private old prompt',
+      })
+    )
+    localStorage.setItem(
+      STORAGE_KEYS.PARAMETER_ENABLED,
+      JSON.stringify({
+        ...DEFAULT_PARAMETER_ENABLED,
+        size: false,
+        quality: false,
+        outputFormat: false,
+      })
+    )
+    const config = getInitialConfig()
+    expect(config).toMatchObject({ quality: 'auto', size: '1:1', prompt: '' })
+    expect(getInitialParameterEnabled()).toMatchObject({
+      size: true,
+      quality: true,
+      outputFormat: true,
+    })
+    localStorage.removeItem(STORAGE_KEYS.CONFIG)
+    localStorage.removeItem(STORAGE_KEYS.PARAMETER_ENABLED)
+  })
+
+  it('preserves dimensions and animation settings but starts the next page session in PNG', () => {
+    const config = makeConfig({
+      size: '2336x3520',
+      quality: 'high',
+      outputFormat: 'gif',
+      frameCount: 12,
+      frameDurationMs: 400,
+      n: 4,
+    })
+    saveConfig(config)
+    expect(getInitialConfig()).toMatchObject({
+      size: '2336x3520',
+      quality: 'high',
+      outputFormat: 'png',
+      frameCount: 12,
+      frameDurationMs: 400,
+      n: 4,
+      prompt: '',
+    })
+    expect(localStorage.getItem(STORAGE_KEYS.CONFIG)).not.toContain(
+      'a red apple'
+    )
+    localStorage.removeItem(STORAGE_KEYS.CONFIG)
   })
 })
 

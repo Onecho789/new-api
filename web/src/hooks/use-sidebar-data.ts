@@ -66,7 +66,7 @@ export function useSidebarData(badges: SidebarBadges = {}): SidebarData {
             icon: FlaskConical,
           },
           {
-            title: t('Image Playground'),
+            title: t('Image workbench'),
             url: '/image-playground',
             icon: ImageIcon,
           },
