@@ -16,13 +16,16 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import i18next from 'i18next'
-import { useState, useEffect, useCallback, useRef } from 'react'
+import { useState, useCallback } from 'react'
 import { toast } from 'sonner'
 
 import { useIsAdmin } from '@/hooks/use-admin'
 import { useDebounce } from '@/hooks/use-debounce'
 import { handleServerError } from '@/lib/handle-server-error'
+import { createServerError } from '@/lib/server-error-message'
+import { useAuthStore } from '@/stores/auth-store'
 
 import {
   getUserBillingHistory,
@@ -30,7 +33,6 @@ import {
   completeOrder,
   isApiSuccess,
 } from '../api'
-import type { TopupRecord } from '../types'
 
 // ============================================================================
 // Billing History Hook
@@ -46,49 +48,67 @@ interface UseBillingHistoryOptions {
 export function useBillingHistory(options: UseBillingHistoryOptions = {}) {
   const { initialPage = 1, initialPageSize = 10 } = options
   const isAdmin = useIsAdmin()
+  const viewerId = useAuthStore((state) => state.auth.user?.id)
+  const queryClient = useQueryClient()
 
-  const [records, setRecords] = useState<TopupRecord[]>([])
-  const [total, setTotal] = useState(0)
   const [page, setPage] = useState(initialPage)
   const [pageSize, setPageSize] = useState(initialPageSize)
   const [keyword, setKeyword] = useState('')
+  const [userId, setUserId] = useState('')
   const debouncedKeyword = useDebounce(keyword)
-  const requestIdRef = useRef(0)
-  const [loading, setLoading] = useState(false)
+  const normalizedUserId = isAdmin ? userId.trim() : ''
+  const debouncedUserId = useDebounce(normalizedUserId)
+  const invalidUserId =
+    normalizedUserId !== '' &&
+    (!/^\d+$/.test(normalizedUserId) ||
+      !Number.isSafeInteger(Number(normalizedUserId)) ||
+      Number(normalizedUserId) <= 0)
+  const filtersPending =
+    keyword !== debouncedKeyword ||
+    (isAdmin && normalizedUserId !== debouncedUserId)
+  const requestReady = !invalidUserId && !filtersPending
+  const effectiveUserId =
+    isAdmin && debouncedUserId !== '' ? Number(debouncedUserId) : undefined
   const [completing, setCompleting] = useState(false)
 
   /**
    * Fetch billing history
    */
-  const fetchBillingHistory = useCallback(async () => {
-    const requestId = ++requestIdRef.current
-    setLoading(true)
-    try {
+  const query = useQuery({
+    queryKey: [
+      'billing-history',
+      viewerId,
+      isAdmin ? 'all' : 'self',
+      page,
+      pageSize,
+      debouncedKeyword,
+      effectiveUserId,
+    ],
+    enabled: requestReady,
+    retry: false,
+    refetchOnWindowFocus: false,
+    meta: { errorToast: false },
+    queryFn: async ({ signal }) => {
       const response = isAdmin
-        ? await getAllBillingHistory(page, pageSize, debouncedKeyword)
-        : await getUserBillingHistory(page, pageSize, debouncedKeyword)
-
-      if (requestId !== requestIdRef.current) return
-
-      if (isApiSuccess(response) && response.data) {
-        setRecords(response.data.items || [])
-        setTotal(response.data.total || 0)
-      } else {
-        handleServerError(response, i18next.t('Failed to load billing history'))
-        setRecords([])
-        setTotal(0)
+        ? await getAllBillingHistory(
+            page,
+            pageSize,
+            debouncedKeyword,
+            effectiveUserId,
+            signal
+          )
+        : await getUserBillingHistory(page, pageSize, debouncedKeyword, signal)
+      if (!isApiSuccess(response) || !response.data) {
+        throw createServerError(response, 'Failed to load billing history')
       }
-    } catch (error) {
-      if (requestId !== requestIdRef.current) return
-      handleServerError(error, i18next.t('Failed to load billing history'))
-      setRecords([])
-      setTotal(0)
-    } finally {
-      if (requestId === requestIdRef.current) {
-        setLoading(false)
-      }
-    }
-  }, [debouncedKeyword, isAdmin, page, pageSize])
+      return response.data
+    },
+  })
+  const records =
+    requestReady && !query.isError ? (query.data?.items ?? []) : []
+  const total = requestReady && !query.isError ? (query.data?.total ?? 0) : 0
+  const loading =
+    !invalidUserId && (filtersPending || query.isPending || query.isFetching)
 
   /**
    * Complete a pending order (admin only)
@@ -106,7 +126,9 @@ export function useBillingHistory(options: UseBillingHistoryOptions = {}) {
         if (isApiSuccess(response)) {
           toast.success(i18next.t('Order completed successfully'))
           // Refresh the list
-          await fetchBillingHistory()
+          await queryClient.invalidateQueries({
+            queryKey: ['billing-history', viewerId],
+          })
           return true
         } else {
           handleServerError(response, i18next.t('Failed to complete order'))
@@ -119,7 +141,7 @@ export function useBillingHistory(options: UseBillingHistoryOptions = {}) {
         setCompleting(false)
       }
     },
-    [isAdmin, fetchBillingHistory]
+    [isAdmin, queryClient, viewerId]
   )
 
   /**
@@ -141,17 +163,14 @@ export function useBillingHistory(options: UseBillingHistoryOptions = {}) {
    * Search by keyword
    */
   const handleSearch = useCallback((newKeyword: string) => {
-    requestIdRef.current += 1
     setKeyword(newKeyword)
     setPage(1) // Reset to first page when searching
   }, [])
 
-  // Fetch data after the search draft has settled.
-  useEffect(() => {
-    if (keyword !== debouncedKeyword) return
-
-    fetchBillingHistory()
-  }, [debouncedKeyword, fetchBillingHistory, keyword])
+  const handleUserIdSearch = useCallback((value: string) => {
+    setUserId(value)
+    setPage(1)
+  }, [])
 
   return {
     records,
@@ -159,13 +178,17 @@ export function useBillingHistory(options: UseBillingHistoryOptions = {}) {
     page,
     pageSize,
     keyword,
+    userId,
+    invalidUserId,
+    error: requestReady ? query.error : null,
     loading,
     completing,
     isAdmin,
     handlePageChange,
     handlePageSizeChange,
     handleSearch,
+    handleUserIdSearch,
     handleCompleteOrder,
-    refresh: fetchBillingHistory,
+    refresh: query.refetch,
   }
 }

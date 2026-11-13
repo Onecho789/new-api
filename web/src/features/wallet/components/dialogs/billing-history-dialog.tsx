@@ -17,10 +17,11 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { Search, Copy, Check, ChevronLeft, ChevronRight } from 'lucide-react'
-import { useState } from 'react'
+import { useId, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { Dialog } from '@/components/dialog'
+import { ErrorState } from '@/components/error-state'
 import { StatusBadge } from '@/components/status-badge'
 import {
   AlertDialog,
@@ -47,6 +48,7 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { useCopyToClipboard } from '@/hooks/use-copy-to-clipboard'
 import { formatCurrencyFromUSD } from '@/lib/currency'
 import { formatNumber } from '@/lib/format'
+import { getServerErrorMessage } from '@/lib/server-error-message'
 
 import { useBillingHistory } from '../../hooks/use-billing-history'
 import {
@@ -71,16 +73,22 @@ export function BillingHistoryDialog({
     page,
     pageSize,
     keyword,
+    userId,
+    invalidUserId,
+    error,
     loading,
     completing,
     isAdmin,
     handlePageChange,
     handlePageSizeChange,
     handleSearch,
+    handleUserIdSearch,
     handleCompleteOrder,
+    refresh,
   } = useBillingHistory()
 
   const [confirmTradeNo, setConfirmTradeNo] = useState<string | null>(null)
+  const userIdInputId = useId()
   const { copyToClipboard, copiedText } = useCopyToClipboard({ notify: false })
 
   const totalPages = Math.ceil(total / pageSize)
@@ -109,11 +117,33 @@ export function BillingHistoryDialog({
       >
         <div className='min-h-0 space-y-3'>
           {/* Search and Filter Bar */}
-          <div className='flex items-center gap-2'>
-            <div className='relative flex-1'>
+          <div
+            role='group'
+            aria-label={t('Filters')}
+            className='flex flex-col gap-2 sm:flex-row sm:items-end'
+          >
+            {isAdmin && (
+              <div className='min-w-0 space-y-1 sm:w-36'>
+                <Label htmlFor={userIdInputId}>{t('User ID')}</Label>
+                <Input
+                  id={userIdInputId}
+                  inputMode='numeric'
+                  placeholder={t('All users')}
+                  value={userId}
+                  onChange={(event) => handleUserIdSearch(event.target.value)}
+                  aria-invalid={invalidUserId}
+                  aria-describedby={
+                    invalidUserId ? `${userIdInputId}-error` : undefined
+                  }
+                  className='h-9'
+                />
+              </div>
+            )}
+            <div className='relative min-w-0 flex-1'>
               <Search className='text-muted-foreground absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2' />
               <Input
                 placeholder={t('Search by order number...')}
+                aria-label={t('Search by order number...')}
                 value={keyword}
                 onChange={(e) => handleSearch(e.target.value)}
                 className='h-9 pl-10'
@@ -131,7 +161,7 @@ export function BillingHistoryDialog({
                 value !== null && handlePageSizeChange(Number.parseInt(value))
               }
             >
-              <SelectTrigger className='h-9 w-[92px] sm:w-32'>
+              <SelectTrigger className='h-9 w-full sm:w-32'>
                 <SelectValue />
               </SelectTrigger>
               <SelectContent alignItemWithTrigger={false}>
@@ -144,9 +174,25 @@ export function BillingHistoryDialog({
               </SelectContent>
             </Select>
           </div>
+          {invalidUserId && (
+            <p
+              id={`${userIdInputId}-error`}
+              role='alert'
+              className='text-destructive text-sm'
+            >
+              {t('Invalid user ID')}
+            </p>
+          )}
 
           {/* Records List */}
           <div className='max-h-[min(54vh,520px)] overflow-y-auto pr-1'>
+            {error && !loading && (
+              <ErrorState
+                className='min-h-40'
+                description={getServerErrorMessage(error)}
+                onRetry={() => void refresh()}
+              />
+            )}
             {loading && (
               <div className='space-y-3'>
                 {['first', 'second', 'third', 'fourth', 'fifth'].map(
@@ -172,13 +218,13 @@ export function BillingHistoryDialog({
                 )}
               </div>
             )}
-            {!loading && records.length === 0 && (
+            {!loading && !error && !invalidUserId && records.length === 0 && (
               <div className='text-muted-foreground flex min-h-40 flex-col items-center justify-center py-10 text-center'>
                 <p className='text-sm font-medium'>
                   {t('No billing records found')}
                 </p>
                 <p className='mt-1 text-xs'>
-                  {keyword
+                  {keyword || (isAdmin && userId)
                     ? t('Try adjusting your search')
                     : t('Your transaction history will appear here')}
                 </p>
@@ -297,6 +343,7 @@ export function BillingHistoryDialog({
                   variant='outline'
                   size='sm'
                   onClick={() => handlePageChange(page - 1)}
+                  aria-label={t('Go to previous page')}
                   disabled={page <= 1}
                   className='h-8 w-8 p-0'
                 >
@@ -311,6 +358,7 @@ export function BillingHistoryDialog({
                   variant='outline'
                   size='sm'
                   onClick={() => handlePageChange(page + 1)}
+                  aria-label={t('Go to next page')}
                   disabled={page >= totalPages}
                   className='h-8 w-8 p-0'
                 >

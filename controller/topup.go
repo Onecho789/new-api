@@ -562,6 +562,15 @@ func GetUserTopUps(c *gin.Context) {
 func GetAllTopUps(c *gin.Context) {
 	pageInfo := common.GetPageQuery(c)
 	keyword := c.Query("keyword")
+	userID := 0
+	if value := c.Query("user_id"); value != "" {
+		parsed, parseErr := strconv.ParseUint(value, 10, strconv.IntSize-1)
+		if parseErr != nil || parsed == 0 {
+			common.ApiErrorStatus(c, http.StatusBadRequest, common.NewMessage("Invalid user ID"))
+			return
+		}
+		userID = int(parsed)
+	}
 
 	var (
 		topups []*model.TopUp
@@ -569,9 +578,9 @@ func GetAllTopUps(c *gin.Context) {
 		err    error
 	)
 	if keyword != "" {
-		topups, total, err = model.SearchAllTopUps(keyword, pageInfo)
+		topups, total, err = model.SearchAllTopUps(keyword, pageInfo, userID)
 	} else {
-		topups, total, err = model.GetAllTopUps(pageInfo)
+		topups, total, err = model.GetAllTopUps(pageInfo, userID)
 	}
 	if err != nil {
 		common.ApiError(c, err)

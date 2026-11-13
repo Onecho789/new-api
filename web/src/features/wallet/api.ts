@@ -205,7 +205,8 @@ export async function transferAffiliateQuota(
 export async function getUserBillingHistory(
   page: number,
   pageSize: number,
-  keyword?: string
+  keyword?: string,
+  signal?: AbortSignal
 ): Promise<ApiResponse<BillingHistoryResponse>> {
   const params = new URLSearchParams({
     p: page.toString(),
@@ -214,7 +215,10 @@ export async function getUserBillingHistory(
   if (keyword) {
     params.append('keyword', keyword)
   }
-  const res = await api.get(`/api/user/topup/self?${params.toString()}`)
+  const res = await api.get(`/api/user/topup/self?${params.toString()}`, {
+    signal,
+    disableDuplicate: true,
+  })
   return res.data
 }
 
@@ -224,7 +228,9 @@ export async function getUserBillingHistory(
 export async function getAllBillingHistory(
   page: number,
   pageSize: number,
-  keyword?: string
+  keyword?: string,
+  userId?: number,
+  signal?: AbortSignal
 ): Promise<ApiResponse<BillingHistoryResponse>> {
   const params = new URLSearchParams({
     p: page.toString(),
@@ -233,7 +239,11 @@ export async function getAllBillingHistory(
   if (keyword) {
     params.append('keyword', keyword)
   }
-  const res = await api.get(`/api/user/topup?${params.toString()}`)
+  if (userId !== undefined) params.append('user_id', String(userId))
+  const res = await api.get(`/api/user/topup?${params.toString()}`, {
+    signal,
+    disableDuplicate: true,
+  })
   return res.data
 }
 
