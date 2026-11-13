@@ -3,7 +3,9 @@ package helper
 import (
 	"errors"
 	"fmt"
+	"math"
 	"strings"
+	"time"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/i18n"
@@ -34,7 +36,11 @@ func modelPriceNotConfiguredError(c *gin.Context, modelName string, userId int) 
 }
 
 // HandleGroupRatio checks for "auto_group" in the context and updates the group ratio and relayInfo.UsingGroup if present
-func HandleGroupRatio(ctx *gin.Context, relayInfo *relaycommon.RelayInfo) hosttypes.GroupRatioInfo {
+func HandleGroupRatio(ctx *gin.Context, relayInfo *relaycommon.RelayInfo) (hosttypes.GroupRatioInfo, error) {
+	return handleGroupRatioAt(ctx, relayInfo, time.Now())
+}
+
+func handleGroupRatioAt(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, at time.Time) (hosttypes.GroupRatioInfo, error) {
 	groupRatioInfo := hosttypes.GroupRatioInfo{
 		GroupRatio:        1.0, // default ratio
 		GroupSpecialRatio: -1,
@@ -46,20 +52,50 @@ func HandleGroupRatio(ctx *gin.Context, relayInfo *relaycommon.RelayInfo) hostty
 		logger.LogDebug(ctx, "final group: %s", autoGroup)
 		relayInfo.UsingGroup = autoGroup.(string)
 	}
-
-	// check user group special ratio
-	userGroupRatio, ok := ratio_setting.GetGroupGroupRatio(relayInfo.UserGroup, relayInfo.UsingGroup)
-	if ok {
-		// user group special ratio
-		groupRatioInfo.GroupSpecialRatio = userGroupRatio
-		groupRatioInfo.GroupRatio = userGroupRatio
+	if relayInfo.PersonalGroupRatios == nil {
+		rules, err := model.ListUserGroupRatios(relayInfo.UserId)
+		if err != nil {
+			return groupRatioInfo, err
+		}
+		frozen := make(map[string]*hosttypes.PersonalGroupRatioSnapshot)
+		for _, rule := range rules {
+			if !rule.IsEffectiveAt(at) {
+				continue
+			}
+			if math.IsNaN(rule.Ratio) || math.IsInf(rule.Ratio, 0) || rule.Ratio < 0 || rule.Ratio > 1000 {
+				return groupRatioInfo, model.ErrPersonalGroupRatioInvalid
+			}
+			frozen[rule.Group] = &hosttypes.PersonalGroupRatioSnapshot{
+				RuleID: rule.ID, UserID: rule.UserID, Group: rule.Group, Version: rule.Version, Ratio: rule.Ratio, PricedAt: at.Unix(),
+			}
+		}
+		relayInfo.PersonalGroupRatios = frozen
+		relayInfo.PersonalGroupBilling = len(frozen) > 0
+	}
+	if relayInfo.GroupRatioSnapshot == nil {
+		frozen := make(map[string]hosttypes.GroupRatioInfo)
+		for group, ratio := range ratio_setting.GetGroupRatioCopy() {
+			frozen[group] = hosttypes.GroupRatioInfo{GroupRatio: ratio, GroupSpecialRatio: -1}
+		}
+		for group, ratio := range ratio_setting.GetGroupGroupRatiosAt(relayInfo.UserGroup, at) {
+			frozen[group] = hosttypes.GroupRatioInfo{GroupRatio: ratio, GroupSpecialRatio: ratio, HasSpecialRatio: true}
+		}
+		relayInfo.GroupRatioSnapshot = frozen
+	}
+	personal := relayInfo.PersonalGroupRatios[relayInfo.UsingGroup]
+	relayInfo.PersonalGroupRatio = personal
+	if personal != nil {
+		groupRatioInfo.GroupRatio = personal.Ratio
+		groupRatioInfo.GroupSpecialRatio = personal.Ratio
 		groupRatioInfo.HasSpecialRatio = true
-	} else {
-		// normal group ratio
-		groupRatioInfo.GroupRatio = ratio_setting.GetGroupRatio(relayInfo.UsingGroup)
+		return groupRatioInfo, nil
 	}
 
-	return groupRatioInfo
+	if frozen, ok := relayInfo.GroupRatioSnapshot[relayInfo.UsingGroup]; ok {
+		return frozen, nil
+	}
+
+	return groupRatioInfo, nil
 }
 
 func ModelPriceHelper(c *gin.Context, info *relaycommon.RelayInfo, promptTokens int, meta *types.TokenCountMeta) (hosttypes.PriceData, error) {
@@ -71,7 +107,10 @@ func ModelPriceHelper(c *gin.Context, info *relaycommon.RelayInfo, promptTokens 
 	billingModelName := info.GetBillingModelName()
 	modelPrice, usePrice := ratio_setting.GetModelPrice(billingModelName, false)
 
-	groupRatioInfo := HandleGroupRatio(c, info)
+	groupRatioInfo, err := HandleGroupRatio(c, info)
+	if err != nil {
+		return hosttypes.PriceData{}, err
+	}
 
 	// Check if this model uses tiered_expr billing
 	if billing_setting.GetBillingMode(billingModelName) == billing_setting.BillingModeTieredExpr {
@@ -211,7 +250,10 @@ func ModelPriceHelper(c *gin.Context, info *relaycommon.RelayInfo, promptTokens 
 
 // ModelPriceHelperPerCall 按次/按量计费的 PriceHelper (MJ、Task)
 func ModelPriceHelperPerCall(c *gin.Context, info *relaycommon.RelayInfo) (hosttypes.PriceData, error) {
-	groupRatioInfo := HandleGroupRatio(c, info)
+	groupRatioInfo, err := HandleGroupRatio(c, info)
+	if err != nil {
+		return hosttypes.PriceData{}, err
+	}
 
 	modelPrice, success := ratio_setting.GetModelPrice(info.OriginModelName, true)
 	usePrice := success

@@ -156,6 +156,11 @@ func runMidjourneyTaskUpdateOnce(ctx context.Context, report func(processed, tot
 				logger.LogWarn(ctx, common.LogText("Midjourney task response ignored: unknown mj_id=%s", responseItem.MjId))
 				continue
 			}
+			// Submission persists the task before charging it. Let a later poll
+			// observe the funding marker before claiming a terminal transition.
+			if task.PersonalBilling != nil && !task.PersonalFundingApplied {
+				continue
+			}
 
 			useTime := (time.Now().UnixNano() / int64(time.Millisecond)) - task.SubmitTime
 			// 如果时间超过一小时，且进度不是100%，则认为任务失败
@@ -205,7 +210,7 @@ func runMidjourneyTaskUpdateOnce(ctx context.Context, report func(processed, tot
 			if (task.Progress != "100%" && responseItem.FailReason != "") || (task.Progress == "100%" && task.Status == "FAILURE") {
 				logger.LogInfo(ctx, common.LogText("%s failed: %s", task.MjId, task.FailReason))
 				task.Progress = "100%"
-				if task.Quota != 0 {
+				if task.Quota != 0 || task.PersonalBilling != nil {
 					shouldReturnQuota = true
 				}
 			}
@@ -214,6 +219,10 @@ func runMidjourneyTaskUpdateOnce(ctx context.Context, report func(processed, tot
 				logger.LogError(ctx, common.LogText("UpdateMidjourneyTask task error: %s", err.Error()))
 			} else if won && shouldReturnQuota {
 				service.RefundMidjourneyQuota(ctx, task, "Composition failed")
+			} else if won && task.Status == "SUCCESS" {
+				if err := service.FinalizeMidjourneyPersonalSpend(task); err != nil {
+					logger.LogError(ctx, common.LogText("failed to finalize Midjourney personal spend: %s", err.Error()))
+				}
 			}
 		}
 	}

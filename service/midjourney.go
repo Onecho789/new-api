@@ -38,6 +38,8 @@ func PrepareMidjourneyTaskBilling(relayInfo *relaycommon.RelayInfo, task *model.
 	task.Quota = 0
 	task.TokenId = 0
 	task.BillingChannelId = 0
+	task.PersonalBilling = nil
+	task.PersonalFundingApplied = false
 	if !shouldBill {
 		return false, nil
 	}
@@ -56,6 +58,15 @@ func PrepareMidjourneyTaskBilling(relayInfo *relaycommon.RelayInfo, task *model.
 	if relayInfo.ChannelMeta != nil && relayInfo.ChannelId > 0 {
 		task.BillingChannelId = relayInfo.ChannelId
 	}
+	if relayInfo.PersonalGroupRatio != nil {
+		if relayInfo.PersonalSpendID == "" {
+			relayInfo.PersonalSpendID = common.NewRequestId()
+		}
+		task.PersonalBilling = &model.TaskBillingContext{
+			PersonalGroupRatio: relayInfo.PersonalGroupRatio,
+			PersonalSpendID:    relayInfo.PersonalSpendID,
+		}
+	}
 	return true, nil
 }
 
@@ -69,6 +80,15 @@ func SettleMidjourneyTaskBilling(relayInfo *relaycommon.RelayInfo, task *model.M
 	}
 	if task == nil || task.Id == 0 {
 		return false, errors.New("Midjourney task must be persisted before billing")
+	}
+	if task.PersonalBilling != nil {
+		if err := PreparePersonalGroupSpendGuard(relayInfo); err != nil {
+			return false, err
+		}
+		task.PersonalBilling.PersonalSpendGuardKeys = append([]string(nil), relayInfo.PersonalSpendGuardKeys...)
+		if err := task.UpdateBillingState(); err != nil {
+			return false, err
+		}
 	}
 
 	result, billingErr := postConsumeQuotaWithResult(relayInfo, task.Quota, 0, true)
@@ -86,20 +106,53 @@ func SettleMidjourneyTaskBilling(relayInfo *relaycommon.RelayInfo, task *model.M
 	if result.TokenApplied {
 		task.TokenId = relayInfo.TokenId
 	}
+	task.PersonalFundingApplied = task.PersonalBilling != nil
 	if updateErr := task.UpdateBillingState(); updateErr != nil {
 		return true, errors.Join(billingErr, fmt.Errorf("update Midjourney billing state: %w", updateErr))
+	}
+	if task.Status == "SUCCESS" {
+		billingErr = errors.Join(billingErr, FinalizeMidjourneyPersonalSpend(task))
 	}
 	return true, billingErr
 }
 
+// FinalizeMidjourneyPersonalSpend counts a successful task on its completion day.
+// The durable guard remains pending if submission funding was ambiguous.
+func FinalizeMidjourneyPersonalSpend(task *model.Midjourney) error {
+	bc := task.PersonalBilling
+	if bc == nil || bc.PersonalGroupRatio == nil {
+		return nil
+	}
+	if !task.PersonalFundingApplied {
+		return errors.New("Midjourney personal funding is not confirmed")
+	}
+	key := "personal:" + bc.PersonalSpendID + ":final"
+	if err := model.BeginPersonalGroupSpendIntent(key, bc.PersonalGroupRatio, task.Quota, time.Now()); err != nil {
+		return err
+	}
+	if err := model.CompletePersonalGroupSpendIntent(key); err != nil {
+		return err
+	}
+	return cancelPersonalGroupSpendGuards(bc.PersonalSpendGuardKeys)
+}
+
 // RefundMidjourneyQuota reverses every accounting element recorded for a billed legacy task.
 func RefundMidjourneyQuota(ctx context.Context, task *model.Midjourney, reason string) bool {
+	if task.PersonalBilling != nil && !task.PersonalFundingApplied {
+		return false
+	}
 	quota := task.Quota
 	if quota == 0 {
+		if task.PersonalBilling != nil {
+			if err := cancelPersonalGroupSpendGuards(task.PersonalBilling.PersonalSpendGuardKeys); err != nil {
+				logger.LogError(ctx, common.LogText("failed to close Midjourney personal spend guard: %s", err.Error()))
+				return false
+			}
+		}
 		return true
 	}
 
-	if err := model.IncreaseUserQuota(task.UserId, quota, false); err != nil {
+	if err := model.IncreaseUserQuota(task.UserId, quota, task.PersonalBilling != nil); err != nil {
 		logger.LogWarn(ctx, common.LogText("failed to refund Midjourney user quota, task %s: %s", task.MjId, err.Error()))
 		return false
 	}
@@ -132,6 +185,13 @@ func RefundMidjourneyQuota(ctx context.Context, task *model.Midjourney, reason s
 	task.Quota = 0
 	if err := task.UpdateBillingState(); err != nil {
 		logger.LogError(ctx, common.LogText("Midjourney refund succeeded but clearing the quota failed, task %s: %s", task.MjId, err.Error()))
+		return false
+	}
+	if task.PersonalBilling != nil {
+		if err := cancelPersonalGroupSpendGuards(task.PersonalBilling.PersonalSpendGuardKeys); err != nil {
+			logger.LogError(ctx, common.LogText("failed to close Midjourney personal spend guard: %s", err.Error()))
+			return false
+		}
 	}
 	return true
 }

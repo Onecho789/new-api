@@ -12,6 +12,7 @@ import (
 	"github.com/QuantumNous/new-api/pkg/billingexpr"
 	commonRelay "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/relaykit/dto"
+	"gorm.io/gorm"
 )
 
 type TaskStatus string
@@ -162,13 +163,43 @@ type TaskPluginAuthorSnapshot struct {
 
 // TaskBillingContext 记录任务提交时的计费参数，以便轮询阶段可以重新计算额度。
 type TaskBillingContext struct {
-	ModelPrice      float64                      `json:"model_price,omitempty"`       // 模型单价
-	GroupRatio      float64                      `json:"group_ratio,omitempty"`       // 分组倍率
-	ModelRatio      float64                      `json:"model_ratio,omitempty"`       // 模型倍率
-	OtherRatios     map[string]float64           `json:"other_ratios,omitempty"`      // 附加倍率（时长、分辨率等）
-	OriginModelName string                       `json:"origin_model_name,omitempty"` // 模型名称，必须为OriginModelName
-	PerCallBilling  bool                         `json:"per_call_billing,omitempty"`  // 按次计费：跳过轮询阶段的差额结算
-	TieredSnapshot  *billingexpr.BillingSnapshot `json:"tiered_snapshot,omitempty"`
+	ModelPrice             float64                      `json:"model_price,omitempty"`          // 模型单价
+	GroupRatio             float64                      `json:"group_ratio,omitempty"`          // 分组倍率
+	GroupRatioCaptured     bool                         `json:"group_ratio_captured,omitempty"` // Distinguishes a frozen zero from an absent legacy multiplier.
+	ModelRatio             float64                      `json:"model_ratio,omitempty"`          // 模型倍率
+	OtherRatios            map[string]float64           `json:"other_ratios,omitempty"`         // 附加倍率（时长、分辨率等）
+	OriginModelName        string                       `json:"origin_model_name,omitempty"`    // 模型名称，必须为OriginModelName
+	PerCallBilling         bool                         `json:"per_call_billing,omitempty"`     // 按次计费：跳过轮询阶段的差额结算
+	TieredSnapshot         *billingexpr.BillingSnapshot `json:"tiered_snapshot,omitempty"`
+	PersonalGroupRatio     *PersonalGroupRatioSnapshot  `json:"personal_group_ratio,omitempty"`
+	PersonalSpendID        string                       `json:"personal_spend_id,omitempty"`
+	PersonalSpendGuardKeys []string                     `json:"personal_spend_guard_keys,omitempty"`
+	PersonalGroupBilling   bool                         `json:"personal_group_billing,omitempty"`
+	PersonalFundingApplied bool                         `json:"personal_funding_applied,omitempty"`
+}
+
+// ConfirmPersonalTaskFunding records that the persisted quota is funded, without
+// overwriting private fields concurrently changed by a polling worker.
+func (t *Task) ConfirmPersonalTaskFunding() error {
+	bc := t.PrivateData.BillingContext
+	if bc == nil || (!bc.PersonalGroupBilling && bc.PersonalGroupRatio == nil && len(bc.PersonalSpendGuardKeys) == 0) {
+		return nil
+	}
+	return DB.Transaction(func(tx *gorm.DB) error {
+		var current Task
+		if err := lockForUpdate(tx).First(&current, t.ID).Error; err != nil {
+			return err
+		}
+		if current.PrivateData.BillingContext == nil || current.Quota != t.Quota {
+			return ErrPersonalGroupIntentConflict
+		}
+		current.PrivateData.BillingContext.PersonalFundingApplied = true
+		if err := tx.Model(&current).Update("private_data", current.PrivateData).Error; err != nil {
+			return err
+		}
+		bc.PersonalFundingApplied = true
+		return nil
+	})
 }
 
 // ResultRetrievable reports whether retrieval surfaces (native query routes,
@@ -555,6 +586,12 @@ func (t *Task) UpdateQuota() error {
 // falls back to INSERT ON CONFLICT when the WHERE-guarded UPDATE matches
 // zero rows, which silently bypasses the CAS guard.
 func (t *Task) UpdateWithStatus(fromStatus TaskStatus) (bool, error) {
+	if bc := t.PrivateData.BillingContext; bc != nil &&
+		(bc.PersonalGroupBilling || bc.PersonalGroupRatio != nil || len(bc.PersonalSpendGuardKeys) > 0) && !bc.PersonalFundingApplied {
+		// A polling snapshot read before the submitter confirms funding must
+		// neither finalize the task nor overwrite the new funding marker.
+		return false, nil
+	}
 	result := DB.Model(t).Where("status = ?", fromStatus).Select("*").Updates(t)
 	if result.Error != nil {
 		return false, result.Error

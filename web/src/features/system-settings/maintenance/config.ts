@@ -82,6 +82,7 @@ export const SIDEBAR_MODULES_DEFAULT: SidebarModulesAdminConfig = {
     models: true,
     redemption: true,
     user: true,
+    'user-group-discounts': true,
     setting: true,
     subscription: true,
   },

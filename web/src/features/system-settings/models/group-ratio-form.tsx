@@ -325,10 +325,8 @@ export const GroupRatioForm = memo(function GroupRatioForm({
                     />
                   </FormControl>
                   <FormDescription>
-                    {t('Nested JSON: source group →')}{' '}
-                    {`{ targetGroup: ratio }`}{' '}
                     {t(
-                      'to override billing when a user in one group uses a token of another group.'
+                      'Special ratio JSON values may be a number, or an object with ratio, enabled, starts_at and ends_at. Times are Unix seconds; 0 means no boundary.'
                     )}
                   </FormDescription>
                   <FormMessage />
@@ -742,12 +740,12 @@ vip          0.5     ${t('No')}                ${t('Assigned by administrator on
                 <GuideCodeBlock>{`{
   "vip": {
     "standard": 0.8,
-    "premium": 0.3
+    "premium": { "ratio": 0.3, "enabled": true, "starts_at": 0, "ends_at": 0 }
   }
 }`}</GuideCodeBlock>
                 <p className='text-muted-foreground text-sm leading-6'>
                   {t(
-                    'Only configured combinations are overridden. All other calls keep the billing group base ratio.'
+                    "When a special ratio is inactive, the billing group's base ratio applies."
                   )}
                 </p>
               </AccordionContent>

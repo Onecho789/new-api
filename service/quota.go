@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
-	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/i18n"
 	"github.com/QuantumNous/new-api/logger"
 	"github.com/QuantumNous/new-api/model"
@@ -104,21 +103,10 @@ func PreWssConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, usag
 	textOutTokens := usage.OutputTokenDetails.TextTokens
 	audioInputTokens := usage.InputTokenDetails.AudioTokens
 	audioOutTokens := usage.OutputTokenDetails.AudioTokens
-	groupRatio := ratio_setting.GetGroupRatio(relayInfo.UsingGroup)
 	modelRatio, _, _ := ratio_setting.GetModelRatio(modelName)
-
-	autoGroup, exists := common.GetContextKey(ctx, constant.ContextKeyAutoGroup)
-	if exists {
-		groupRatio = ratio_setting.GetGroupRatio(autoGroup.(string))
-		logger.LogDebug(ctx, "final group ratio: %f", groupRatio)
-		relayInfo.UsingGroup = autoGroup.(string)
-	}
-
-	actualGroupRatio := groupRatio
-	userGroupRatio, ok := ratio_setting.GetGroupGroupRatio(relayInfo.UserGroup, relayInfo.UsingGroup)
-	if ok {
-		actualGroupRatio = userGroupRatio
-	}
+	// Pricing is established before the websocket opens. Chunks must retain
+	// that final multiplier across schedule boundaries, including an explicit 0.
+	actualGroupRatio := relayInfo.PriceData.GroupRatioInfo.GroupRatio
 
 	quotaInfo := QuotaInfo{
 		InputDetails: TokenDetails{
@@ -146,7 +134,23 @@ func PreWssConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, usag
 		return fmt.Errorf("token quota is not enough, token remain quota: %s, need quota: %s", logger.FormatQuota(token.RemainQuota), logger.FormatQuota(quota))
 	}
 
-	err = PostConsumeQuota(relayInfo, quota, 0, false)
+	if relayInfo.PersonalGroupBilling || relayInfo.PersonalGroupRatio != nil || len(relayInfo.PersonalSpendGuardKeys) > 0 {
+		// Realtime chunks reserve funds, but daily spend is recorded once at
+		// final settlement. Keep the reservation in the same billing session.
+		if relayInfo.Billing == nil {
+			if apiErr := PreConsumeBilling(ctx, 0, relayInfo); apiErr != nil {
+				return apiErr
+			}
+		}
+		reserved := relayInfo.Billing.GetPreConsumedQuota()
+		if reserved > common.MaxQuota-quota {
+			return errors.New("realtime reservation exceeds quota limit")
+		}
+		err = relayInfo.Billing.ReserveBeforeSubmit(reserved + quota)
+		relayInfo.FinalPreConsumedQuota = relayInfo.Billing.GetPreConsumedQuota()
+	} else {
+		err = PostConsumeQuota(relayInfo, quota, 0, false)
+	}
 	if err != nil {
 		return err
 	}
@@ -451,10 +455,15 @@ func postConsumeQuotaWithResult(relayInfo *relaycommon.RelayInfo, quota int, pre
 		}
 	} else {
 		// Wallet
+		synchronous := relayInfo.PersonalGroupBilling || relayInfo.PersonalGroupRatio != nil || len(relayInfo.PersonalSpendGuardKeys) > 0
 		if quota > 0 {
-			err = model.DecreaseUserQuota(relayInfo.UserId, quota, false)
+			if synchronous {
+				err = model.DecreaseUserQuotaSync(relayInfo.UserId, quota)
+			} else {
+				err = model.DecreaseUserQuota(relayInfo.UserId, quota, false)
+			}
 		} else {
-			err = model.IncreaseUserQuota(relayInfo.UserId, -quota, false)
+			err = model.IncreaseUserQuota(relayInfo.UserId, -quota, synchronous)
 		}
 		if err != nil {
 			return result, err

@@ -345,6 +345,115 @@ describe('image playground sidebar visibility', () => {
   })
 })
 
+describe('user group discount navigation', () => {
+  it('adds an independently configurable entry after Users in existing sidebar settings', () => {
+    const config = parseSidebarModulesAdmin(
+      '{"admin":{"enabled":true,"user":true}}'
+    )
+    expect(config.admin['user-group-discounts']).toBe(true)
+    const { result } = sidebarFor(config)
+    const items =
+      result.current.find((group) => group.id === 'admin')?.items ?? []
+    const usersIndex = items.findIndex((item) => item.title === 'Users')
+    expect(items[usersIndex + 1]).toMatchObject({
+      title: 'Group discounts',
+      url: '/user-group-discounts',
+    })
+    expect(
+      items
+        .filter((item) => checkIsActive('/user-group-discounts', item))
+        .map((item) => item.title)
+    ).toEqual(['Group discounts'])
+
+    config.admin['user-group-discounts'] = false
+    const saved = parseSidebarModulesAdmin(serializeSidebarModulesAdmin(config))
+    const hidden = sidebarFor(saved)
+      .result.current.flatMap((group) => group.items)
+      .map((item) => item.title)
+    expect(hidden).not.toContain('Group discounts')
+    expect(hidden).toContain('Users')
+  })
+
+  it.each([
+    [
+      { admin: { enabled: true, 'user-group-discounts': false } },
+      { admin: { 'user-group-discounts': true } },
+    ],
+    [{ admin: { enabled: false } }, undefined],
+    [undefined, { admin: { enabled: true, 'user-group-discounts': false } }],
+  ])(
+    'honors administrator and personal module visibility (%j, %j)',
+    (admin, user) => {
+      const { result } = sidebarFor(admin, user)
+      expect(
+        result.current.flatMap((group) => group.items).map((item) => item.title)
+      ).not.toContain('Group discounts')
+    }
+  )
+
+  it('keeps discounts accessible when only the Users module is hidden', () => {
+    const { result } = sidebarFor({ admin: { enabled: true, user: false } })
+    const titles = result.current
+      .flatMap((group) => group.items)
+      .map((item) => item.title)
+    expect(titles).toContain('Group discounts')
+    expect(titles).not.toContain('Users')
+  })
+
+  it.each([ROLE.USER, ROLE.ADMIN, ROLE.SUPER_ADMIN])(
+    'only shows the discount page in resolved sidebar and search navigation for administrator role %s',
+    async (role) => {
+      const get = vi
+        .spyOn(api, 'get')
+        .mockResolvedValue({ data: { success: true, data: [] } })
+      const client = new QueryClient({
+        defaultOptions: { queries: { retry: false } },
+      })
+      client.setQueryData(['status'], { SidebarModulesAdmin: '' })
+      useAuthStore
+        .getState()
+        .auth.setUser({ id: 1, username: 'operator', role })
+      function NavigationEntries() {
+        const { navGroups } = useSidebarView()
+        return (
+          <ul aria-label='Navigation entries'>
+            {navGroups
+              .flatMap((group) => group.items)
+              .map((item) => (
+                <li key={item.title}>{item.title}</li>
+              ))}
+          </ul>
+        )
+      }
+      const router = createRouter({
+        routeTree: createRootRoute({ component: NavigationEntries }),
+        history: createMemoryHistory({
+          initialEntries: ['/user-group-discounts'],
+        }),
+      })
+      try {
+        await router.load()
+        render(
+          <QueryClientProvider client={client}>
+            <RouterProvider router={router} />
+          </QueryClientProvider>
+        )
+        await screen.findByRole('list', { name: 'Navigation entries' })
+        if (role >= ROLE.ADMIN) {
+          expect(screen.getByText('Group discounts')).toBeInTheDocument()
+        } else {
+          expect(
+            screen.queryByText('Group discounts')
+          ).not.toBeInTheDocument()
+        }
+      } finally {
+        get.mockRestore()
+        client.clear()
+      }
+    }
+  )
+})
+
 describe('model pricing badge', () => {
   function issue(modelName: string, pluginKey: string): ModelPricingIssue {
     return {

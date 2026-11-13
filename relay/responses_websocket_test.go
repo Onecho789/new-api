@@ -700,7 +700,7 @@ func TestResponsesWSPassthroughPreservesRawPricingParameters(t *testing.T) {
 
 func TestResponsesWSMasksMappedModelsAcrossRequestAndIdleFrames(t *testing.T) {
 	database := setupRelayChannelDB(t)
-	require.NoError(t, database.AutoMigrate(&model.User{}))
+	require.NoError(t, database.AutoMigrate(&model.User{}, &model.UserGroupRatio{}))
 	user := &model.User{Username: "responses-mask-user", Group: "default"}
 	require.NoError(t, database.Create(user).Error)
 	previousRatios := ratio_setting.ModelRatio2JSONString()

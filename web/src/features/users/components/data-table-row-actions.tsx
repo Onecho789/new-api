@@ -16,6 +16,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
+import { Link } from '@tanstack/react-router'
 import type { Row } from '@tanstack/react-table'
 import {
   Pencil,
@@ -28,6 +29,7 @@ import {
   ShieldAlert,
   Link2,
   CreditCard,
+  Tags,
 } from 'lucide-react'
 import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
@@ -50,6 +52,7 @@ import type { AdminUserManageAction } from '@/features/auth/secure-verification'
 import { UserSubscriptionsDialog } from '@/features/subscriptions/components/dialogs/user-subscriptions-dialog'
 import { handleServerError } from '@/lib/handle-server-error'
 import { AuthOperationError } from '@/lib/secure-verification'
+import { useAuthStore } from '@/stores/auth-store'
 
 import { manageUser, resetUserPasskey, resetUserTwoFA } from '../api'
 import {
@@ -77,6 +80,11 @@ interface DataTableRowActionsProps {
 export function DataTableRowActions({ row }: DataTableRowActionsProps) {
   const { t } = useTranslation()
   const user = row.original
+  const viewer = useAuthStore((state) => state.auth.user)
+  const canViewDiscounts =
+    !!viewer &&
+    viewer.role >= USER_ROLE.ADMIN &&
+    (viewer.role === USER_ROLE.ROOT || viewer.role > user.role)
   const {
     setOpen,
     setCurrentRow,
@@ -214,6 +222,18 @@ export function DataTableRowActions({ row }: DataTableRowActionsProps) {
         ariaLabel={t('Open menu')}
         contentClassName='w-48'
       >
+        {canViewDiscounts && (
+          <DropdownMenuItem
+            render={
+              <Link to='/user-group-discounts' search={{ user_id: user.id }} />
+            }
+          >
+            {t('View discounts')}
+            <DropdownMenuShortcut>
+              <Tags size={16} />
+            </DropdownMenuShortcut>
+          </DropdownMenuItem>
+        )}
         {isDisabled ? (
           <DropdownMenuItem onClick={() => handleManage('enable')}>
             {t('Enable')}

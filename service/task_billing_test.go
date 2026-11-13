@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"math"
 	"net/http"
 	"net/http/httptest"
@@ -18,6 +20,7 @@ import (
 	"github.com/QuantumNous/new-api/pkg/billingexpr"
 	"github.com/QuantumNous/new-api/pkg/jsplugin"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
+	"github.com/QuantumNous/new-api/relaykit/dto"
 	kittypes "github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/QuantumNous/new-api/setting/ratio_setting"
 	"github.com/QuantumNous/new-api/types"
@@ -62,6 +65,9 @@ func TestMain(m *testing.M) {
 		&model.UserSubscription{},
 		&model.SystemTask{},
 		&model.SystemTaskLock{},
+		&model.UserGroupRatio{},
+		&model.UserGroupSpendIntent{},
+		&model.UserGroupSpendDaily{},
 	); err != nil {
 		panic("failed to migrate: " + err.Error())
 	}
@@ -86,6 +92,9 @@ func truncate(t *testing.T) {
 		model.DB.Exec("DELETE FROM user_subscriptions")
 		model.DB.Exec("DELETE FROM system_task_locks")
 		model.DB.Exec("DELETE FROM system_tasks")
+		model.DB.Exec("DELETE FROM user_group_spend_intents")
+		model.DB.Exec("DELETE FROM user_group_spend_dailies")
+		model.DB.Exec("DELETE FROM user_group_ratios")
 	})
 }
 
@@ -606,6 +615,55 @@ func TestPrepareMidjourneyTaskBillingKeepsUnbilledMarkerClear(t *testing.T) {
 	assert.Zero(t, task.Quota)
 	assert.Zero(t, task.TokenId)
 	assert.Zero(t, task.BillingChannelId)
+}
+
+func TestMidjourneyPersonalSpendCountsOnlySuccessfulCompletion(t *testing.T) {
+	for _, succeeds := range []bool{true, false} {
+		t.Run(map[bool]string{true: "completed", false: "refunded"}[succeeds], func(t *testing.T) {
+			truncate(t)
+			seedUser(t, 71, 10000)
+			seedToken(t, 71, 71, "mj-personal-test", 10000)
+			seedChannel(t, 71)
+			rule := &model.UserGroupRatio{UserID: 71, Group: "default", Ratio: 0.8, MinDailyQuota: 100, Enabled: true, Version: 1, EnabledAt: time.Now().Unix()}
+			require.NoError(t, model.DB.Create(rule).Error)
+			snapshot, err := model.ResolvePersonalGroupRatio(71, "default", time.Now())
+			require.NoError(t, err)
+			info := &relaycommon.RelayInfo{UserId: 71, TokenId: 71, TokenKey: "mj-personal-test", UsingGroup: "default", PersonalGroupRatio: snapshot, ChannelMeta: &relaycommon.ChannelMeta{ChannelId: 71}}
+			task := &model.Midjourney{UserId: 71, ChannelId: 71, MjId: "mj-personal", Status: "SUBMITTED"}
+			prepared, err := PrepareMidjourneyTaskBilling(info, task, 80, true)
+			require.NoError(t, err)
+			require.NoError(t, task.Insert())
+			billed, err := SettleMidjourneyTaskBilling(info, task, prepared)
+			require.NoError(t, err)
+			require.True(t, billed)
+			assert.Equal(t, 9920, getUserQuota(t, 71))
+			views, err := model.GetPersonalGroupRatioRules(71, time.Now())
+			require.NoError(t, err)
+			require.Len(t, views, 1)
+			assert.Zero(t, views[0].TodayQuota, "submission is still a reservation")
+			assert.Positive(t, views[0].TodayPending)
+
+			persisted := getMidjourneyTask(t, task.Id)
+			require.NotNil(t, persisted.PersonalBilling)
+			assert.Equal(t, 0.8, persisted.PersonalBilling.PersonalGroupRatio.Ratio)
+			if succeeds {
+				persisted.Status = "SUCCESS"
+				require.NoError(t, FinalizeMidjourneyPersonalSpend(&persisted))
+				require.NoError(t, FinalizeMidjourneyPersonalSpend(&persisted))
+			} else {
+				assert.True(t, RefundMidjourneyQuota(context.Background(), &persisted, "test failed task"))
+				assert.Equal(t, 10000, getUserQuota(t, 71))
+			}
+			views, err = model.GetPersonalGroupRatioRules(71, time.Now())
+			require.NoError(t, err)
+			expected := int64(0)
+			if succeeds {
+				expected = 80
+			}
+			assert.Equal(t, expected, views[0].TodayQuota)
+			assert.Zero(t, views[0].TodayPending)
+		})
+	}
 }
 
 func TestSettleMidjourneyTaskBillingRequiresPersistedTask(t *testing.T) {
@@ -1850,4 +1908,291 @@ func TestTaskLogPreservesTaskIdentityWithoutUpstreamModel(t *testing.T) {
 	assert.NotContains(t, stored, "upstream_model_name")
 	assert.NotContains(t, stored, "is_model_mapped")
 	assert.Equal(t, "public-task", stored["task_id"])
+}
+
+func TestPersonalSpendSettlementSurvivesAccountingFailures(t *testing.T) {
+	for _, failure := range []string{"none", "intent", "funding", "completion", "guard_cleanup"} {
+		t.Run(failure, func(t *testing.T) {
+			truncate(t)
+			seedUser(t, 981, 1000)
+			rule := model.UserGroupRatio{UserID: 981, Group: "default", Ratio: 0.5, MinDailyQuota: 120, Enabled: true, Version: 1, EnabledAt: time.Now().AddDate(0, 0, -1).Unix()}
+			require.NoError(t, model.DB.Create(&rule).Error)
+			snapshot, err := model.ResolvePersonalGroupRatio(981, "default", time.Now())
+			require.NoError(t, err)
+			oldBatch, oldLogs := common.BatchUpdateEnabled, common.LogConsumeEnabled
+			common.BatchUpdateEnabled, common.LogConsumeEnabled = true, false
+			t.Cleanup(func() { common.BatchUpdateEnabled, common.LogConsumeEnabled = oldBatch, oldLogs })
+			ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+			info := &relaycommon.RelayInfo{UserId: 981, IsPlayground: true, ForcePreConsume: true, PersonalGroupRatio: snapshot, PersonalGroupBilling: true}
+			ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+			info.UserSetting.BillingPreference = "wallet_only"
+			require.Nil(t, PreConsumeBilling(ctx, 200, info))
+			var user model.User
+			require.NoError(t, model.DB.First(&user, 981).Error)
+			assert.Equal(t, 800, user.Quota, "tracked reservation bypasses batch persistence")
+
+			injectFailure := failure != "none"
+			injected := errors.New("injected personal spend persistence failure")
+			require.NoError(t, model.DB.Callback().Create().Before("gorm:create").Register("personal_spend_create_failure", func(tx *gorm.DB) {
+				if !injectFailure {
+					return
+				}
+				if failure == "intent" {
+					if record, ok := tx.Statement.Dest.(*model.UserGroupSpendIntent); ok && record.Kind == "final" {
+						tx.AddError(injected)
+					}
+				}
+				if failure == "completion" && tx.Statement.Table == "user_group_spend_dailies" {
+					tx.AddError(injected)
+				}
+			}))
+			require.NoError(t, model.DB.Callback().Update().Before("gorm:update").Register("personal_spend_funding_failure", func(tx *gorm.DB) {
+				if injectFailure && failure == "funding" && tx.Statement.Table == "users" {
+					tx.AddError(injected)
+				}
+				if injectFailure && failure == "guard_cleanup" {
+					if updates, ok := tx.Statement.Dest.(map[string]any); ok && tx.Statement.Table == "user_group_spend_intents" && updates["status"] == "canceled" {
+						tx.AddError(injected)
+					}
+				}
+			}))
+			t.Cleanup(func() {
+				require.NoError(t, model.DB.Callback().Create().Remove("personal_spend_create_failure"))
+				require.NoError(t, model.DB.Callback().Update().Remove("personal_spend_funding_failure"))
+			})
+			err = SettleBilling(ctx, info, 120)
+			if failure != "none" {
+				require.ErrorIs(t, err, injected)
+				var pending int64
+				require.NoError(t, model.DB.Model(&model.UserGroupSpendIntent{}).Where("rule_id = ? AND status = ?", rule.ID, "pending").Count(&pending).Error)
+				assert.Positive(t, pending)
+				checkErr := model.CheckPersonalGroupRatios(time.Now().AddDate(0, 0, 1).Add(12 * time.Hour))
+				if failure == "guard_cleanup" {
+					require.ErrorIs(t, checkErr, injected)
+				} else {
+					require.NoError(t, checkErr)
+				}
+				require.NoError(t, model.DB.First(&rule, rule.ID).Error)
+				assert.True(t, rule.Enabled, "incomplete settlement cannot revoke the discount")
+				injectFailure = false
+				if failure == "guard_cleanup" {
+					location := time.FixedZone(model.PersonalGroupRatioTimezone, 8*60*60)
+					now := time.Now().In(location)
+					checkAt := time.Date(now.Year(), now.Month(), now.Day()+1, 0, 10, 0, 0, location)
+					require.NoError(t, model.CheckPersonalGroupRatios(checkAt))
+					require.NoError(t, model.DB.Model(&model.UserGroupSpendIntent{}).Where("rule_id = ? AND status = ?", rule.ID, "pending").Count(&pending).Error)
+					assert.Zero(t, pending, "background check recovers confirmed settlement without an HTTP retry")
+					require.NoError(t, model.DB.First(&user, 981).Error)
+					assert.Equal(t, 880, user.Quota, "background recovery does not move money")
+				}
+			} else {
+				require.NoError(t, err)
+			}
+			require.NoError(t, SettleBilling(ctx, info, 120))
+			require.NoError(t, SettleBilling(ctx, info, 120))
+			require.NoError(t, model.DB.First(&user, 981).Error)
+			assert.Equal(t, 880, user.Quota, "retry never moves funded money twice")
+			var daily model.UserGroupSpendDaily
+			require.NoError(t, model.DB.Where("rule_id = ? AND day = ?", rule.ID, model.PersonalGroupRatioDay(time.Now())).First(&daily).Error)
+			assert.Equal(t, int64(120), daily.Quota)
+			var pending int64
+			require.NoError(t, model.DB.Model(&model.UserGroupSpendIntent{}).Where("rule_id = ? AND status = ?", rule.ID, "pending").Count(&pending).Error)
+			assert.Zero(t, pending)
+		})
+	}
+}
+
+func TestPersonalSpendFailureRefundClosesGuard(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		force    bool
+		reserved int
+	}{{"trusted", false, 0}, {"reserved", true, 100}} {
+		t.Run(tc.name, func(t *testing.T) {
+			truncate(t)
+			seedUser(t, 982, 100_000_000)
+			location := time.FixedZone(model.PersonalGroupRatioTimezone, 8*60*60)
+			now := time.Now().In(location)
+			rule := model.UserGroupRatio{UserID: 982, Group: "default", Ratio: 0.5, MinDailyQuota: 1, Enabled: true, Version: 1, EnabledAt: now.AddDate(0, 0, -1).Unix()}
+			require.NoError(t, model.DB.Create(&rule).Error)
+			snapshot, err := model.ResolvePersonalGroupRatio(982, "default", now)
+			require.NoError(t, err)
+			ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+			info := &relaycommon.RelayInfo{UserId: 982, IsPlayground: true, TokenUnlimited: true, PersonalGroupRatio: snapshot, ForcePreConsume: tc.force}
+			ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+			info.UserSetting.BillingPreference = "wallet_only"
+			require.Nil(t, PreConsumeBilling(ctx, 100, info))
+			assert.Equal(t, tc.reserved, info.Billing.GetPreConsumedQuota())
+			var user model.User
+			require.NoError(t, model.DB.First(&user, 982).Error)
+			assert.Equal(t, 100_000_000-tc.reserved, user.Quota)
+			info.Billing.Refund(ctx)
+			info.Billing.Refund(ctx)
+			require.Eventually(t, func() bool {
+				var pending int64
+				return model.DB.Model(&model.UserGroupSpendIntent{}).Where("rule_id = ? AND status = ?", rule.ID, "pending").Count(&pending).Error == nil && pending == 0
+			}, time.Second, time.Millisecond)
+			require.NoError(t, model.DB.First(&user, 982).Error)
+			assert.Equal(t, 100_000_000, user.Quota, "failed request refunds exactly once")
+			checkAt := time.Date(now.Year(), now.Month(), now.Day()+1, 0, 10, 0, 0, location)
+			require.NoError(t, model.CheckPersonalGroupRatios(checkAt))
+			require.NoError(t, model.DB.First(&rule, rule.ID).Error)
+			assert.False(t, rule.Enabled, "a refunded request must neither qualify nor block assessment")
+			assert.Zero(t, rule.LastCheckQuota)
+		})
+	}
+}
+
+func TestPersonalTaskSpendWaitsForFundingAndKeepsFrozenRatio(t *testing.T) {
+	truncate(t)
+	seedUser(t, 983, 1000)
+	rule := model.UserGroupRatio{UserID: 983, Group: "default", Ratio: 0.5, MinDailyQuota: 1, Enabled: true, Version: 1}
+	require.NoError(t, model.DB.Create(&rule).Error)
+	snapshot, err := model.ResolvePersonalGroupRatio(983, "default", time.Now())
+	require.NoError(t, err)
+	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	info := &relaycommon.RelayInfo{UserId: 983, IsPlayground: true, ForcePreConsume: true, PersonalGroupRatio: snapshot, PersonalSpendDeferred: true}
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/videos", nil)
+	info.UserSetting.BillingPreference = "wallet_only"
+	require.Nil(t, PreConsumeBilling(ctx, 160, info))
+	task := makeTask(983, 0, 160, 0, BillingSourceWallet, 0)
+	task.PrivateData.BillingContext.PersonalGroupRatio = snapshot
+	task.PrivateData.BillingContext.PersonalSpendID = info.PersonalSpendID
+	task.PrivateData.BillingContext.PersonalSpendGuardKeys = append([]string(nil), info.PersonalSpendGuardKeys...)
+	require.NoError(t, model.DB.Create(task).Error)
+	task.Status = model.TaskStatusSuccess
+	won, err := task.UpdateWithStatus(model.TaskStatusInProgress)
+	require.NoError(t, err)
+	assert.False(t, won, "polling cannot win terminal CAS before submitted funding is confirmed")
+	require.Error(t, FinalizePersonalTaskSpend(task))
+	require.NoError(t, SettleBilling(ctx, info, 160))
+	require.NoError(t, task.ConfirmPersonalTaskFunding())
+	won, err = task.UpdateWithStatus(model.TaskStatusInProgress)
+	require.NoError(t, err)
+	require.True(t, won)
+	// Changing a rule after submission must not reprice the running task.
+	require.NoError(t, model.DB.Model(&rule).Updates(map[string]any{"ratio": 9, "version": 2, "enabled": false}).Error)
+	previousRatios := ratio_setting.ModelRatio2JSONString()
+	require.NoError(t, ratio_setting.UpdateModelRatioByJSONString(`{"test-model":1}`))
+	t.Cleanup(func() { require.NoError(t, ratio_setting.UpdateModelRatioByJSONString(previousRatios)) })
+	require.True(t, RecalculateTaskQuotaByTokens(context.Background(), task, 200))
+	assert.Equal(t, 100, task.Quota)
+	require.True(t, RecalculateTaskQuotaByTokens(context.Background(), task, 200))
+	var user model.User
+	require.NoError(t, model.DB.First(&user, 983).Error)
+	assert.Equal(t, 900, user.Quota)
+	var daily model.UserGroupSpendDaily
+	require.NoError(t, model.DB.Where("rule_id = ?", rule.ID).First(&daily).Error)
+	assert.Equal(t, int64(100), daily.Quota)
+	var pending int64
+	require.NoError(t, model.DB.Model(&model.UserGroupSpendIntent{}).Where("rule_id = ? AND status = ?", rule.ID, "pending").Count(&pending).Error)
+	assert.Zero(t, pending)
+}
+
+func TestTaskTokenSettlementUsesPersistedGroupSnapshot(t *testing.T) {
+	previousModels := ratio_setting.ModelRatio2JSONString()
+	previousGroups := ratio_setting.GroupRatio2JSONString()
+	previousSpecial := ratio_setting.GroupGroupRatio2JSONString()
+	t.Cleanup(func() {
+		require.NoError(t, ratio_setting.UpdateModelRatioByJSONString(previousModels))
+		require.NoError(t, ratio_setting.UpdateGroupRatioByJSONString(previousGroups))
+		require.NoError(t, ratio_setting.UpdateGroupGroupRatioByJSONString(previousSpecial))
+	})
+	require.NoError(t, ratio_setting.UpdateModelRatioByJSONString(`{"test-model":2}`))
+	require.NoError(t, ratio_setting.UpdateGroupRatioByJSONString(`{"route":9}`))
+	require.NoError(t, ratio_setting.UpdateGroupGroupRatioByJSONString(`{"account":{"route":8},"route":{"route":7}}`))
+	for _, tc := range []struct {
+		name             string
+		contextJSON      string
+		wantQuota        int
+		wantRecalculated bool
+	}{
+		{"captured_discount", `{"group_ratio":0.4,"group_ratio_captured":true,"model_ratio":1}`, 40, true},
+		{"captured_zero", `{"group_ratio":0,"group_ratio_captured":true,"model_ratio":1}`, 0, true},
+		{"captured_zero_model", `{"group_ratio":1,"group_ratio_captured":true,"model_ratio":0}`, 160, false},
+		{"legacy_nonzero", `{"group_ratio":0.5,"model_ratio":1}`, 50, true},
+		{"legacy_model_fallback", `{"group_ratio":0.5}`, 100, true},
+		{"legacy_expression_zero", `{"model_ratio":1,"tiered_snapshot":{"group_ratio":0}}`, 0, true},
+		{"legacy_missing_group", `{"model_ratio":1}`, 160, false},
+		{"legacy_ambiguous_zero", `{"group_ratio":0,"model_ratio":1}`, 160, false},
+		{"legacy_no_context", `null`, 160, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			truncate(t)
+			seedUser(t, 984, 840)
+			seedChannel(t, 984)
+			seedChargedAccounting(t, 984, 984, 0, 160, 1)
+			require.NoError(t, model.DB.Model(&model.User{}).Where("id = ?", 984).Update("group", "account").Error)
+			var billing *model.TaskBillingContext
+			require.NoError(t, common.Unmarshal([]byte(tc.contextJSON), &billing))
+			encoded, err := common.Marshal(billing)
+			require.NoError(t, err)
+			var roundTrip *model.TaskBillingContext
+			require.NoError(t, common.Unmarshal(encoded, &roundTrip))
+			assert.Equal(t, billing, roundTrip, "zero capture must survive the real JSON codec")
+			task := makeTask(984, 984, 160, 0, BillingSourceWallet, 0)
+			task.Group = "route"
+			task.PrivateData.BillingContext = roundTrip
+			require.NoError(t, model.DB.Create(task).Error)
+			var stored model.Task
+			require.NoError(t, model.DB.First(&stored, task.ID).Error)
+			assert.Equal(t, roundTrip, stored.PrivateData.BillingContext)
+			assert.Equal(t, tc.wantRecalculated, RecalculateTaskQuotaByTokens(context.Background(), &stored, 100))
+			assert.Equal(t, tc.wantQuota, stored.Quota)
+			assert.Equal(t, tc.wantRecalculated, RecalculateTaskQuotaByTokens(context.Background(), &stored, 100), "repeat settlement must not move funds again")
+			var user model.User
+			require.NoError(t, model.DB.First(&user, 984).Error)
+			assert.Equal(t, 1000-tc.wantQuota, user.Quota)
+			assert.Equal(t, tc.wantQuota, user.UsedQuota)
+			assert.Equal(t, 1, user.RequestCount)
+		})
+	}
+}
+
+func TestRealtimeChunksKeepSelectedGroupRatio(t *testing.T) {
+	// Use startup initialization for the quoted token-key column; TestMain's
+	// lightweight GORM fixture does not initialize model package SQL metadata.
+	previousLogDB, previousLogType, previousMaster := model.LOG_DB, common.LogDatabaseType(), common.IsMasterNode
+	t.Setenv("LOG_SQL_DSN", "")
+	common.IsMasterNode = false
+	require.NoError(t, model.InitLogDB())
+	t.Cleanup(func() {
+		model.LOG_DB, common.IsMasterNode = previousLogDB, previousMaster
+		common.SetLogDatabaseType(previousLogType)
+	})
+	previousModels := ratio_setting.ModelRatio2JSONString()
+	previousGroups := ratio_setting.GroupRatio2JSONString()
+	previousSpecial := ratio_setting.GroupGroupRatio2JSONString()
+	t.Cleanup(func() {
+		require.NoError(t, ratio_setting.UpdateModelRatioByJSONString(previousModels))
+		require.NoError(t, ratio_setting.UpdateGroupRatioByJSONString(previousGroups))
+		require.NoError(t, ratio_setting.UpdateGroupGroupRatioByJSONString(previousSpecial))
+	})
+	require.NoError(t, ratio_setting.UpdateModelRatioByJSONString(`{"frozen-realtime":1}`))
+	for _, ratio := range []float64{0, 0.4} {
+		t.Run(fmt.Sprint(ratio), func(t *testing.T) {
+			truncate(t)
+			seedUser(t, 985, 1000)
+			seedToken(t, 985, 985, "frozen-realtime-token", 1000)
+			ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+			info := &relaycommon.RelayInfo{
+				UserId: 985, TokenId: 985, TokenKey: "frozen-realtime-token", UserGroup: "member", UsingGroup: "route", OriginModelName: "frozen-realtime",
+				PriceData: types.PriceData{GroupRatioInfo: types.GroupRatioInfo{GroupRatio: ratio}},
+			}
+			usage := &dto.RealtimeUsage{}
+			usage.InputTokenDetails.TextTokens = 100
+			require.NoError(t, ratio_setting.UpdateGroupRatioByJSONString(`{"route":8}`))
+			require.NoError(t, ratio_setting.UpdateGroupGroupRatioByJSONString(`{"member":{"route":9}}`))
+			require.NoError(t, PreWssConsumeQuota(ctx, info, usage))
+			// Revoke the scheduled price between chunks; the selected price remains.
+			require.NoError(t, ratio_setting.UpdateGroupGroupRatioByJSONString(`{}`))
+			require.NoError(t, PreWssConsumeQuota(ctx, info, usage))
+			var user model.User
+			require.NoError(t, model.DB.First(&user, 985).Error)
+			assert.Equal(t, 1000-common.QuotaFromFloat(200*ratio), user.Quota)
+			var token model.Token
+			require.NoError(t, model.DB.First(&token, 985).Error)
+			assert.Equal(t, user.Quota, token.RemainQuota)
+		})
+	}
 }

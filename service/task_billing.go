@@ -114,10 +114,15 @@ func taskAdjustFunding(task *model.Task, delta int) error {
 	if taskIsSubscription(task) {
 		return model.PostConsumeUserSubscriptionDelta(task.PrivateData.SubscriptionId, int64(delta))
 	}
+	synchronous := task.PrivateData.BillingContext != nil &&
+		(task.PrivateData.BillingContext.PersonalGroupBilling || task.PrivateData.BillingContext.PersonalGroupRatio != nil || len(task.PrivateData.BillingContext.PersonalSpendGuardKeys) > 0)
 	if delta > 0 {
+		if synchronous {
+			return model.DecreaseUserQuotaSync(task.UserId, delta)
+		}
 		return model.DecreaseUserQuota(task.UserId, delta, false)
 	}
-	return model.IncreaseUserQuota(task.UserId, -delta, false)
+	return model.IncreaseUserQuota(task.UserId, -delta, synchronous)
 }
 
 // taskAdjustTokenQuota 调整任务的令牌额度，delta > 0 表示扣费，delta < 0 表示退还。
@@ -255,7 +260,15 @@ func taskModelName(task *model.Task) string {
 // 返回资金来源是否已成功退还；失败时保留 quota，供显式重试或人工对账。
 func RefundTaskQuota(ctx context.Context, task *model.Task, reason string) bool {
 	quota := task.Quota
+	if err := beginPersonalTaskSpend(task, 0); err != nil {
+		logger.LogError(ctx, fmt.Sprintf("failed to prepare personal task refund: %v", err))
+		return false
+	}
 	if quota == 0 {
+		if err := CompletePersonalTaskSpend(task); err != nil {
+			logger.LogError(ctx, fmt.Sprintf("failed to complete personal task refund: %v", err))
+			return false
+		}
 		return true
 	}
 
@@ -292,6 +305,11 @@ func RefundTaskQuota(ctx context.Context, task *model.Task, reason string) bool 
 	task.Quota = 0
 	if err := task.UpdateQuota(); err != nil {
 		logger.LogError(ctx, common.LogText("refund succeeded but clearing the task quota failed, task %s: %s", task.TaskID, err.Error()))
+		return false
+	}
+	if err := CompletePersonalTaskSpend(task); err != nil {
+		logger.LogError(ctx, fmt.Sprintf("failed to complete personal task refund: %v", err))
+		return false
 	}
 	return true
 }
@@ -304,12 +322,19 @@ func RecalculateTaskQuota(ctx context.Context, task *model.Task, actualQuota int
 	if actualQuota < 0 {
 		return
 	}
+	if err := beginPersonalTaskSpend(task, actualQuota); err != nil {
+		logger.LogError(ctx, fmt.Sprintf("failed to prepare personal task settlement: %v", err))
+		return
+	}
 	preConsumedQuota := task.Quota
 	quotaDelta := actualQuota - preConsumedQuota
 
 	if quotaDelta == 0 {
 		logger.LogInfo(ctx, common.LogText("task %s pre-consumed quota matches the actual quota (%s, %s)",
 			task.TaskID, logger.LogQuota(actualQuota), reason.Error()))
+		if err := CompletePersonalTaskSpend(task); err != nil {
+			logger.LogError(ctx, fmt.Sprintf("failed to complete personal task settlement: %v", err))
+		}
 		return
 	}
 
@@ -333,6 +358,8 @@ func RecalculateTaskQuota(ctx context.Context, task *model.Task, actualQuota int
 	task.Quota = actualQuota
 	if err := task.UpdateQuota(); err != nil {
 		logger.LogError(ctx, common.LogText("failed to write back the settled task quota, task %s: %s", task.TaskID, err.Error()))
+	} else if err := CompletePersonalTaskSpend(task); err != nil {
+		logger.LogError(ctx, fmt.Sprintf("failed to complete personal task settlement: %v", err))
 	}
 
 	// 提交阶段已经累计过一次请求；结算阶段只调整最终用量。
@@ -378,34 +405,40 @@ func RecalculateTaskQuotaByTokens(ctx context.Context, task *model.Task, totalTo
 	}
 
 	modelName := taskModelName(task)
-
-	// 获取模型价格和倍率
-	modelRatio, hasRatioSetting, _ := ratio_setting.GetModelRatio(modelName)
-	// 只有配置了倍率(非固定价格)时才按 token 重新计费
-	if !hasRatioSetting || modelRatio <= 0 {
+	bc := task.PrivateData.BillingContext
+	if bc == nil {
+		// Historical tasks without pricing snapshots cannot recover the price or
+		// the user's billing group at submission. Keep their reserved charge.
 		return false
 	}
-
-	// 获取用户和组的倍率信息
-	group := task.Group
-	if group == "" {
-		user, err := model.GetUserById(task.UserId, false)
-		if err == nil {
-			group = user.Group
-		}
-	}
-	if group == "" {
-		return false
-	}
-
-	groupRatio := ratio_setting.GetGroupRatio(group)
-	userGroupRatio, hasUserGroupRatio := ratio_setting.GetGroupGroupRatio(group, group)
-
 	var finalGroupRatio float64
-	if hasUserGroupRatio {
-		finalGroupRatio = userGroupRatio
-	} else {
-		finalGroupRatio = groupRatio
+	switch {
+	case bc.PersonalGroupRatio != nil:
+		finalGroupRatio = bc.PersonalGroupRatio.Ratio
+	case bc.GroupRatioCaptured:
+		finalGroupRatio = bc.GroupRatio
+	case bc.TieredSnapshot != nil:
+		finalGroupRatio = bc.TieredSnapshot.GroupRatio
+	case bc.GroupRatio > 0:
+		// Older writers omitted zero values. A nonzero saved field is usable,
+		// but a missing/zero legacy field cannot establish a free group.
+		finalGroupRatio = bc.GroupRatio
+	default:
+		return false
+	}
+	if finalGroupRatio < 0 || math.IsNaN(finalGroupRatio) || math.IsInf(finalGroupRatio, 0) {
+		return false
+	}
+
+	modelRatio := bc.ModelRatio
+	hasRatioSetting := modelRatio > 0
+	if !bc.GroupRatioCaptured && !hasRatioSetting {
+		// Legacy contexts sometimes saved only the group multiplier.
+		modelRatio, hasRatioSetting, _ = ratio_setting.GetModelRatio(modelName)
+	}
+	// 只有配置了倍率(非固定价格)时才按 token 重新计费
+	if !hasRatioSetting || modelRatio <= 0 || math.IsNaN(modelRatio) || math.IsInf(modelRatio, 0) {
+		return false
 	}
 
 	// 计算 OtherRatios 乘积（视频折扣、时长等）

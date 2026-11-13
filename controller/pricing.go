@@ -2,6 +2,7 @@ package controller
 
 import (
 	"maps"
+	"time"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
@@ -50,6 +51,17 @@ func GetPricing(c *gin.Context) {
 				ratio, ok := ratio_setting.GetGroupGroupRatio(group, g)
 				if ok {
 					groupRatio[g] = ratio
+				}
+			}
+			now := time.Now()
+			personalRules, err := model.ListUserGroupRatios(userId.(int))
+			if err != nil {
+				common.ApiError(c, err)
+				return
+			}
+			for _, rule := range personalRules {
+				if _, configured := groupRatio[rule.Group]; configured && rule.IsEffectiveAt(now) {
+					groupRatio[rule.Group] = rule.Ratio
 				}
 			}
 		}

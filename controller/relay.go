@@ -320,7 +320,16 @@ func getChannel(c *gin.Context, info *relaycommon.RelayInfo, retryParam *service
 		return nil, types.NewError(errors.New(i18n.T(c, i18n.MsgRelayRetryNoAvailableChannel, map[string]any{"Group": selectGroup, "Model": info.OriginModelName})), types.ErrorCodeGetChannelFailed, types.ErrOptionWithSkipRetry())
 	}
 
-	info.PriceData.GroupRatioInfo = helper.HandleGroupRatio(c, info)
+	groupRatio, ratioErr := helper.HandleGroupRatio(c, info)
+	if ratioErr != nil {
+		return nil, types.NewError(ratioErr, types.ErrorCodeQueryDataError, types.ErrOptionWithSkipRetry())
+	}
+	info.PriceData.GroupRatioInfo = groupRatio
+	if info.Billing != nil {
+		if guardErr := service.PreparePersonalGroupSpendGuard(info); guardErr != nil {
+			return nil, types.NewError(guardErr, types.ErrorCodeUpdateDataError, types.ErrOptionWithSkipRetry())
+		}
+	}
 
 	service.RequestPolicy(c).BeginAttempt(channel, selectGroup)
 	newAPIError := middleware.SetupContextForSelectedChannel(c, channel, info.OriginModelName)
@@ -666,13 +675,18 @@ func executeTaskSubmissionWith(
 	task.PrivateData.TokenId = relayInfo.TokenId
 	task.PrivateData.NodeName = common.NodeName
 	task.PrivateData.BillingContext = &model.TaskBillingContext{
-		ModelPrice:      relayInfo.PriceData.ModelPrice,
-		GroupRatio:      relayInfo.PriceData.GroupRatioInfo.GroupRatio,
-		ModelRatio:      relayInfo.PriceData.ModelRatio,
-		OtherRatios:     relayInfo.PriceData.OtherRatios(),
-		OriginModelName: relayInfo.OriginModelName,
-		PerCallBilling:  common.StringsContains(constant.TaskPricePatches, relayInfo.OriginModelName) || relayInfo.PriceData.UsePrice,
-		TieredSnapshot:  relayInfo.TieredBillingSnapshot,
+		ModelPrice:             relayInfo.PriceData.ModelPrice,
+		GroupRatio:             relayInfo.PriceData.GroupRatioInfo.GroupRatio,
+		GroupRatioCaptured:     true,
+		ModelRatio:             relayInfo.PriceData.ModelRatio,
+		OtherRatios:            relayInfo.PriceData.OtherRatios(),
+		OriginModelName:        relayInfo.OriginModelName,
+		PerCallBilling:         common.StringsContains(constant.TaskPricePatches, relayInfo.OriginModelName) || relayInfo.PriceData.UsePrice,
+		TieredSnapshot:         relayInfo.TieredBillingSnapshot,
+		PersonalGroupRatio:     relayInfo.PersonalGroupRatio,
+		PersonalSpendID:        relayInfo.PersonalSpendID,
+		PersonalGroupBilling:   relayInfo.PersonalGroupBilling,
+		PersonalSpendGuardKeys: append([]string(nil), relayInfo.PersonalSpendGuardKeys...),
 	}
 	task.Quota = result.Quota
 	task.Data = result.TaskData
@@ -740,6 +754,7 @@ func executeTaskSubmissionWith(
 	}
 	durable = true
 	stage = "settle"
+	relayInfo.PersonalSpendDeferred = !immediateTerminal
 	diagnostics.durable(task)
 	diagnostics.settleStart(task, result.Quota)
 
@@ -748,6 +763,10 @@ func executeTaskSubmissionWith(
 		taskErr = service.TaskErrorWrapperLocal(errors.New("failed to settle task billing"), "task_billing_settlement_failed", http.StatusInternalServerError)
 		diagnostics.failed("settle", "billing_error", taskErr, true)
 		return nil, taskErr
+	}
+	if confirmErr := task.ConfirmPersonalTaskFunding(); confirmErr != nil {
+		common.SysError(fmt.Sprintf("failed to confirm personal task funding: %v", confirmErr))
+		return nil, service.TaskErrorWrapperLocal(errors.New("failed to confirm task funding"), "task_billing_settlement_failed", http.StatusInternalServerError)
 	}
 	perfmetrics.RecordImmediateTaskResult(relayInfo, result.Immediate)
 	if task.Status != model.TaskStatusFailure {

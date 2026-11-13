@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
@@ -20,6 +21,7 @@ import (
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/service/authz"
+	"github.com/QuantumNous/new-api/setting/ratio_setting"
 	"github.com/alicebob/miniredis/v2"
 	"github.com/go-redis/redis/v8"
 
@@ -28,6 +30,252 @@ import (
 	"github.com/stretchr/testify/require"
 	"gorm.io/gorm"
 )
+
+func TestPersonalGroupRatioManagementPermissions(t *testing.T) {
+	for _, tc := range []struct {
+		name                  string
+		actorRole, targetRole int
+		allowed               bool
+	}{
+		{"ordinary user", common.RoleCommonUser, common.RoleCommonUser, false},
+		{"admin manages user", common.RoleAdminUser, common.RoleCommonUser, true},
+		{"admin cannot manage peer", common.RoleAdminUser, common.RoleAdminUser, false},
+		{"admin cannot manage root", common.RoleAdminUser, common.RoleRootUser, false},
+		{"root manages admin", common.RoleRootUser, common.RoleAdminUser, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			db := setupManageUserTestDB(t)
+			require.NoError(t, db.AutoMigrate(&model.UserGroupRatio{}, &model.UserGroupSpendIntent{}, &model.UserGroupSpendDaily{}))
+			actor := createQuotaTestOperator(t, db, tc.actorRole)
+			target := model.User{Username: "personal-ratio-target", Role: tc.targetRole, Status: common.UserStatusEnabled, Group: "default"}
+			require.NoError(t, db.Create(&target).Error)
+			originalRatios := ratio_setting.GroupRatio2JSONString()
+			require.NoError(t, ratio_setting.UpdateGroupRatioByJSONString(`{"default":1}`))
+			t.Cleanup(func() { require.NoError(t, ratio_setting.UpdateGroupRatioByJSONString(originalRatios)) })
+			params := gin.Params{{Key: "id", Value: strconv.Itoa(target.Id)}}
+			identity := service.AuthIdentity{UserID: actor.Id}
+			body := `{"rules":[{"group":"default","ratio":0.8,"min_daily_quota":100,"enabled":true}]}`
+			response := adminUserRequest(http.MethodPut, "/api/user/"+strconv.Itoa(target.Id)+"/group-ratios", body, "", identity, tc.actorRole, params, UpdateUserGroupRatios)
+			assert.Equal(t, tc.allowed, decodeAPIResponse(t, response).Success, response.Body.String())
+			response = adminUserRequest(http.MethodGet, "/api/user/"+strconv.Itoa(target.Id)+"/group-ratios", "", "", identity, tc.actorRole, params, GetUserGroupRatios)
+			assert.Equal(t, tc.allowed, decodeAPIResponse(t, response).Success, response.Body.String())
+			rules, err := model.ListUserGroupRatios(target.Id)
+			require.NoError(t, err)
+			if tc.allowed {
+				require.Len(t, rules, 1)
+				assert.Equal(t, 0.8, rules[0].Ratio)
+			} else {
+				assert.Empty(t, rules)
+			}
+		})
+	}
+}
+
+func TestPersonalGroupRatioPricingIsUserScoped(t *testing.T) {
+	db := setupManageUserTestDB(t)
+	require.NoError(t, db.AutoMigrate(&model.UserGroupRatio{}, &model.UserGroupSpendIntent{}, &model.UserGroupSpendDaily{}, &model.Ability{}, &model.Channel{}, &model.Model{}, &model.Vendor{}))
+	configureTokenAutoGroupsTest(t, "5", `["default","vip"]`)
+	user := model.User{Username: "ratio-pricing-owner", AffCode: "ratio-owner", Role: common.RoleCommonUser, Status: common.UserStatusEnabled, Group: "default", AuthVersion: 1}
+	other := model.User{Username: "ratio-pricing-other", AffCode: "ratio-other", Role: common.RoleCommonUser, Status: common.UserStatusEnabled, Group: "default", AuthVersion: 1}
+	require.NoError(t, db.Create(&user).Error)
+	require.NoError(t, db.Create(&other).Error)
+	require.NoError(t, db.Create(&model.UserGroupRatio{UserID: user.Id, Group: "default", Ratio: 0, MinDailyQuota: 100, Enabled: true, Version: 1}).Error)
+	require.NoError(t, db.Create(&model.UserGroupRatio{UserID: user.Id, Group: "vip", Ratio: 0.5, MinDailyQuota: 100, Enabled: false, Version: 1}).Error)
+
+	for _, userID := range []int{user.Id, other.Id} {
+		for _, handler := range []gin.HandlerFunc{GetUserGroups, GetPricing} {
+			recorder := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(recorder)
+			c.Request = httptest.NewRequest(http.MethodGet, "/api/pricing", nil)
+			c.Set("id", userID)
+			handler(c)
+			var response struct {
+				Success    bool               `json:"success"`
+				GroupRatio map[string]float64 `json:"group_ratio"`
+				Data       any                `json:"data"`
+			}
+			require.NoError(t, common.Unmarshal(recorder.Body.Bytes(), &response))
+			require.True(t, response.Success, recorder.Body.String())
+			ratios := response.GroupRatio
+			if ratios == nil {
+				ratios = make(map[string]float64)
+				for group, value := range response.Data.(map[string]any) {
+					if ratio, ok := value.(map[string]any)["ratio"].(float64); ok {
+						ratios[group] = ratio
+					}
+				}
+			}
+			expected := 1.0
+			if userID == user.Id {
+				expected = 0
+			}
+			assert.Equal(t, expected, ratios["default"])
+			assert.Equal(t, 1.0, ratios["vip"], "disabled override must not affect displayed prices")
+		}
+	}
+}
+
+func TestPersonalGroupRatioUpdateRequiresExplicitFields(t *testing.T) {
+	db := setupManageUserTestDB(t)
+	require.NoError(t, db.AutoMigrate(&model.UserGroupRatio{}, &model.UserGroupSpendIntent{}, &model.UserGroupSpendDaily{}))
+	actor := createQuotaTestOperator(t, db, common.RoleRootUser)
+	target := model.User{Username: "explicit-ratio-target", Role: common.RoleCommonUser, Status: common.UserStatusEnabled, Group: "default"}
+	require.NoError(t, db.Create(&target).Error)
+	params := gin.Params{{Key: "id", Value: strconv.Itoa(target.Id)}}
+	identity := service.AuthIdentity{UserID: actor.Id}
+	for _, body := range []string{
+		`{}`,
+		`{"rules":[{"group":"default","min_daily_quota":100,"enabled":true}]}`,
+		`{"rules":[{"group":"default","ratio":0,"min_daily_quota":100}]}`,
+		`{"rules":[{"group":"default","ratio":0,"enabled":false}]}`,
+	} {
+		response := adminUserRequest(http.MethodPut, "/api/user/group-ratios", body, "", identity, common.RoleRootUser, params, UpdateUserGroupRatios)
+		assert.False(t, decodeAPIResponse(t, response).Success, response.Body.String())
+	}
+	rules, err := model.ListUserGroupRatios(target.Id)
+	require.NoError(t, err)
+	assert.Empty(t, rules, "incomplete forms must not silently zero a price or disable a policy")
+	body := `{"rules":[{"group":"default","ratio":0,"min_daily_quota":100,"enabled":false}]}`
+	response := adminUserRequest(http.MethodPut, "/api/user/group-ratios", body, "", identity, common.RoleRootUser, params, UpdateUserGroupRatios)
+	require.True(t, decodeAPIResponse(t, response).Success, response.Body.String())
+	rules, err = model.ListUserGroupRatios(target.Id)
+	require.NoError(t, err)
+	require.Len(t, rules, 1)
+	assert.Zero(t, rules[0].Ratio)
+	assert.False(t, rules[0].Enabled)
+}
+
+func TestPersonalGroupRatioAdminListDatabaseMatrix(t *testing.T) {
+	for _, dialect := range []string{"sqlite", "mysql", "postgres"} {
+		t.Run(dialect, func(t *testing.T) {
+			if dialect != "sqlite" && os.Getenv("TEST_"+strings.ToUpper(dialect)+"_DSN") == "" {
+				t.Skip("real database DSN is not configured")
+			}
+			t.Setenv("TEST_MANAGE_USER_DIALECT", dialect)
+			db := setupManageUserTestDB(t)
+			require.NoError(t, db.AutoMigrate(&model.UserGroupRatio{}, &model.UserGroupSpendIntent{}, &model.UserGroupSpendDaily{}))
+			root := createQuotaTestOperator(t, db, common.RoleRootUser)
+			users := []model.User{
+				{Username: "discount-admin", AffCode: "discount-admin", Role: common.RoleAdminUser, Status: common.UserStatusEnabled},
+				{Username: "discount-alice", AffCode: "discount-alice", DisplayName: "Customer_A", Role: common.RoleCommonUser, Status: common.UserStatusEnabled},
+				{Username: "discount-bob", AffCode: "discount-bob", DisplayName: "CustomerB", Role: common.RoleCommonUser, Status: common.UserStatusEnabled},
+				{Username: "discount-deleted", AffCode: "discount-deleted", Role: common.RoleCommonUser, Status: common.UserStatusEnabled},
+			}
+			require.NoError(t, db.Create(&users).Error)
+			admin, alice, bob, deleted := users[0], users[1], users[2], users[3]
+			now := time.Now()
+			old := now.AddDate(0, 0, -2).Unix()
+			rules := []model.UserGroupRatio{
+				{UserID: alice.Id, Group: "default", Ratio: 0.8, MinDailyQuota: 100, Enabled: true, Version: 1, EnabledAt: old},
+				{UserID: alice.Id, Group: "CaseGroup", Ratio: 0.6, MinDailyQuota: 100, Enabled: true, Version: 1, EnabledAt: now.Unix(), LastCheckStatus: "pending"},
+				{UserID: alice.Id, Group: "casegroup", Ratio: 0.5, MinDailyQuota: 100, Enabled: false, Version: 1, DisableReason: "manual"},
+				{UserID: bob.Id, Group: "default", Ratio: 0.7, MinDailyQuota: 100, Enabled: true, Version: 1, EnabledAt: old, LastCheckStatus: "pending"},
+				{UserID: bob.Id, Group: "vip", Ratio: 0.4, MinDailyQuota: 100, Enabled: false, Version: 1, DisableReason: "below_daily_minimum"},
+				{UserID: admin.Id, Group: "default", Ratio: 0.9, MinDailyQuota: 100, Enabled: true, Version: 1, EnabledAt: old},
+				{UserID: root.Id, Group: "default", Ratio: 0.9, MinDailyQuota: 100, Enabled: true, Version: 1, EnabledAt: old},
+				{UserID: deleted.Id, Group: "default", Ratio: 0.9, MinDailyQuota: 100, Enabled: true, Version: 1, EnabledAt: old},
+			}
+			require.NoError(t, db.Create(&rules).Error)
+			require.NoError(t, db.Delete(&deleted).Error)
+			day := model.PersonalGroupRatioDay(now)
+			require.NoError(t, db.Create(&model.UserGroupSpendDaily{RuleID: rules[0].ID, Day: day, Quota: 70}).Error)
+			require.NoError(t, db.Create(&model.UserGroupSpendDaily{RuleID: rules[0].ID, Day: model.PersonalGroupRatioDay(now.AddDate(0, 0, -1)), Quota: 999}).Error)
+			require.NoError(t, db.Create(&model.UserGroupSpendIntent{RequestKey: "admin-list-pending", RuleID: rules[3].ID, Version: 1, Day: day, Status: "pending", Kind: "guard"}).Error)
+			for _, tc := range []struct {
+				name, query string
+				actor       model.User
+				total       int64
+				ids         []int
+			}{
+				{"root sees manageable users", "", root, 7, []int{rules[6].ID, rules[5].ID, rules[4].ID, rules[3].ID, rules[2].ID, rules[1].ID, rules[0].ID}},
+				{"admin excludes peers root and deleted", "", admin, 5, []int{rules[4].ID, rules[3].ID, rules[2].ID, rules[1].ID, rules[0].ID}},
+				{"pagination keeps scoped count", "p=2&page_size=2", admin, 5, []int{rules[2].ID, rules[1].ID}},
+				{"user filter", "user_id=" + strconv.Itoa(alice.Id), admin, 3, []int{rules[2].ID, rules[1].ID, rules[0].ID}},
+				{"hidden user filter cannot leak count", "user_id=" + strconv.Itoa(root.Id), admin, 0, []int{}},
+				{"numeric user keyword", "keyword=" + strconv.Itoa(bob.Id), admin, 2, []int{rules[4].ID, rules[3].ID}},
+				{"display name substring ignores case", "keyword=customer", admin, 5, []int{rules[4].ID, rules[3].ID, rules[2].ID, rules[1].ID, rules[0].ID}},
+				{"wildcard characters are literal", "keyword=_", admin, 3, []int{rules[2].ID, rules[1].ID, rules[0].ID}},
+				{"exact group case", "group=CaseGroup", admin, 1, []int{rules[1].ID}},
+				{"active state", "status=active", admin, 1, []int{rules[0].ID}},
+				{"grace precedes pending state", "status=grace_period", admin, 1, []int{rules[1].ID}},
+				{"pending state", "status=pending_settlement", admin, 1, []int{rules[3].ID}},
+				{"manual state", "status=manually_disabled", admin, 1, []int{rules[2].ID}},
+				{"automatic state", "status=auto_disabled", admin, 1, []int{rules[4].ID}},
+				{"combined filters", "status=active&group=default&keyword=alice", admin, 1, []int{rules[0].ID}},
+				{"empty page retains total", "p=9&page_size=2", admin, 5, []int{}},
+			} {
+				t.Run(tc.name, func(t *testing.T) {
+					response := adminUserRequest(http.MethodGet, "/api/user/group-ratios?"+tc.query, "", "", service.AuthIdentity{UserID: tc.actor.Id}, tc.actor.Role, nil, ListUserGroupRatios)
+					var result struct {
+						Success bool
+						Data    model.UserGroupRatioList
+					}
+					require.NoError(t, common.Unmarshal(response.Body.Bytes(), &result))
+					require.Equal(t, http.StatusOK, response.Code, response.Body.String())
+					require.True(t, result.Success, response.Body.String())
+					assert.Equal(t, tc.total, result.Data.Total)
+					ids := make([]int, 0, len(result.Data.Items))
+					for _, item := range result.Data.Items {
+						ids = append(ids, item.ID)
+						assert.NotEmpty(t, item.Username)
+						if item.ID == rules[0].ID {
+							assert.EqualValues(t, 70, item.TodayQuota)
+						}
+						if item.ID == rules[3].ID {
+							assert.EqualValues(t, 1, item.TodayPending)
+						}
+						if tc.query == "status=grace_period" {
+							assert.Equal(t, "grace_period", item.Status)
+						}
+					}
+					assert.Equal(t, tc.ids, ids)
+					assert.Equal(t, model.PersonalGroupRatioTimezone, result.Data.Timezone)
+					assert.Equal(t, day, result.Data.Day)
+					assert.NotContains(t, response.Body.String(), "password")
+				})
+			}
+			for _, query := range []string{"p=0", "p=1000001", "page_size=-1", "page_size=abc", "user_id=-1", "status=unknown", "keyword=" + strings.Repeat("a", 129)} {
+				response := adminUserRequest(http.MethodGet, "/api/user/group-ratios?"+query, "", "", service.AuthIdentity{UserID: root.Id}, root.Role, nil, ListUserGroupRatios)
+				assert.Equal(t, http.StatusBadRequest, response.Code, query)
+			}
+			denied := adminUserRequest(http.MethodGet, "/api/user/group-ratios", "", "", service.AuthIdentity{UserID: alice.Id}, alice.Role, nil, ListUserGroupRatios)
+			assert.Equal(t, http.StatusForbidden, denied.Code)
+			cancelled, cancel := context.WithCancel(context.Background())
+			cancel()
+			_, err := model.ListManagedUserGroupRatios(cancelled, root.Id, model.UserGroupRatioListOptions{Page: 1, PageSize: 20}, now)
+			assert.ErrorIs(t, err, context.Canceled)
+
+			t.Run("versioned_edits_reject_stale_forms_atomically", func(t *testing.T) {
+				previous := ratio_setting.GroupRatio2JSONString()
+				require.NoError(t, ratio_setting.UpdateGroupRatioByJSONString(`{"default":1,"CaseGroup":1,"casegroup":1,"vip":1}`))
+				t.Cleanup(func() { require.NoError(t, ratio_setting.UpdateGroupRatioByJSONString(previous)) })
+				identity := service.AuthIdentity{UserID: root.Id}
+				params := gin.Params{{Key: "id", Value: strconv.Itoa(alice.Id)}}
+				body := `{"rules":[{"group":"default","ratio":0.3,"min_daily_quota":100,"enabled":false,"version":1}]}`
+				response := adminUserRequest(http.MethodPut, "/api/user/"+strconv.Itoa(alice.Id)+"/group-ratios", body, "", identity, root.Role, params, UpdateUserGroupRatios)
+				require.True(t, decodeAPIResponse(t, response).Success, response.Body.String())
+				response = adminUserRequest(http.MethodPut, "/api/user/"+strconv.Itoa(alice.Id)+"/group-ratios", body, "", identity, root.Role, params, UpdateUserGroupRatios)
+				assert.Equal(t, http.StatusConflict, response.Code)
+				body = `{"rules":[{"group":"casegroup","ratio":0.2,"min_daily_quota":100,"enabled":true,"version":1},{"group":"default","ratio":0.1,"min_daily_quota":100,"enabled":true,"version":1}]}`
+				response = adminUserRequest(http.MethodPut, "/api/user/"+strconv.Itoa(alice.Id)+"/group-ratios", body, "", identity, root.Role, params, UpdateUserGroupRatios)
+				assert.Equal(t, http.StatusConflict, response.Code)
+				var unchanged model.UserGroupRatio
+				require.NoError(t, db.First(&unchanged, rules[2].ID).Error)
+				assert.False(t, unchanged.Enabled)
+				assert.Equal(t, 0.5, unchanged.Ratio)
+				body = `{"rules":[{"group":"vip","ratio":0.2,"min_daily_quota":100,"enabled":true,"version":0}]}`
+				response = adminUserRequest(http.MethodPut, "/api/user/"+strconv.Itoa(alice.Id)+"/group-ratios", body, "", identity, root.Role, params, UpdateUserGroupRatios)
+				require.True(t, decodeAPIResponse(t, response).Success, response.Body.String())
+				response = adminUserRequest(http.MethodPut, "/api/user/"+strconv.Itoa(alice.Id)+"/group-ratios", body, "", identity, root.Role, params, UpdateUserGroupRatios)
+				assert.Equal(t, http.StatusConflict, response.Code, "duplicate create must not overwrite an existing discount")
+				require.NoError(t, model.CheckPersonalGroupRatios(now.AddDate(0, 0, 2)))
+				body = `{"rules":[{"group":"vip","ratio":0.2,"min_daily_quota":100,"enabled":true,"version":1}]}`
+				response = adminUserRequest(http.MethodPut, "/api/user/"+strconv.Itoa(alice.Id)+"/group-ratios", body, "", identity, root.Role, params, UpdateUserGroupRatios)
+				assert.Equal(t, http.StatusConflict, response.Code, "an old form must not reopen an automatically disabled discount")
+			})
+		})
+	}
+}
 
 func setupManageUserTestDB(t *testing.T) *gorm.DB {
 	t.Helper()

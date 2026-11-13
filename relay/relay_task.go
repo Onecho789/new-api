@@ -292,7 +292,10 @@ func RelayTaskSubmit(c *gin.Context, info *relaycommon.RelayInfo) (*TaskSubmitRe
 			}
 			return nil, service.TaskErrorWrapper(runErr, "model_price_error", http.StatusBadRequest, common.UpstreamAddresses(c)...)
 		}
-		groupRatioInfo := helper.HandleGroupRatio(c, info)
+		groupRatioInfo, ratioErr := helper.HandleGroupRatio(c, info)
+		if ratioErr != nil {
+			return nil, service.TaskErrorWrapper(ratioErr, "model_price_error", http.StatusInternalServerError, common.UpstreamAddresses(c)...)
+		}
 		quota, clamp := common.QuotaRoundChecked(cost * common.QuotaPerUnit * groupRatioInfo.GroupRatio)
 		noteTaskQuotaClamp(info, clamp)
 		priceData = types.PriceData{Quota: quota, QuotaToPreConsume: quota, GroupRatioInfo: groupRatioInfo}

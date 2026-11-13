@@ -4,10 +4,13 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/i18n"
+	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/pkg/billingexpr"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/relaykit/dto"
@@ -18,9 +21,12 @@ import (
 	"github.com/QuantumNous/new-api/setting/model_setting"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/QuantumNous/new-api/setting/ratio_setting"
+	hosttypes "github.com/QuantumNous/new-api/types"
 	"github.com/gin-gonic/gin"
+	"github.com/glebarez/sqlite"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gorm.io/gorm"
 )
 
 func TestModelPriceHelperTieredUsesPreloadedRequestInput(t *testing.T) {
@@ -802,3 +808,143 @@ func (s *priceTestReservation) GetPreConsumedQuota() int { return s.held }
 func (s *priceTestReservation) Reserve(quota int) error  { s.held = max(s.held, quota); return nil }
 
 func (s *priceTestReservation) ReserveBeforeSubmit(quota int) error { return s.Reserve(quota) }
+
+func TestGroupRatioScheduleFreezesAllRetryGroups(t *testing.T) {
+	previousGroups := ratio_setting.GroupRatio2JSONString()
+	previousSpecial := ratio_setting.GroupGroupRatio2JSONString()
+	t.Cleanup(func() {
+		require.NoError(t, ratio_setting.UpdateGroupRatioByJSONString(previousGroups))
+		require.NoError(t, ratio_setting.UpdateGroupGroupRatioByJSONString(previousSpecial))
+	})
+	require.NoError(t, ratio_setting.UpdateGroupRatioByJSONString(`{"first":2,"retry":3,"free":4,"personal":5,"future":6}`))
+	require.NoError(t, ratio_setting.UpdateGroupGroupRatioByJSONString(`{"member":{
+		"first":{"ratio":0.4,"enabled":true,"starts_at":100,"ends_at":200},
+		"retry":{"ratio":0.7,"enabled":true,"starts_at":100,"ends_at":200},
+		"free":{"ratio":0,"enabled":true,"starts_at":100,"ends_at":200},
+		"personal":0.8,
+		"future":{"ratio":0.6,"enabled":true,"starts_at":200,"ends_at":300}
+	}}`))
+	for _, tc := range []struct {
+		name    string
+		at      int64
+		ratio   float64
+		special bool
+	}{
+		{"before_start", 99, 2, false},
+		{"start_inclusive", 100, 0.4, true},
+		{"before_end", 199, 0.4, true},
+		{"end_exclusive", 200, 2, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+			info := &relaycommon.RelayInfo{UserGroup: "member", UsingGroup: "first"}
+			ratio, err := handleGroupRatioAt(ctx, info, time.Unix(tc.at, 0))
+			require.NoError(t, err)
+			assert.Equal(t, tc.ratio, ratio.GroupRatio)
+			assert.Equal(t, tc.special, ratio.HasSpecialRatio)
+			unchanged, err := handleGroupRatioAt(ctx, info, time.Unix(250, 0))
+			require.NoError(t, err)
+			assert.Equal(t, ratio, unchanged, "crossing either boundary must not reprice an existing request")
+		})
+	}
+	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	info := &relaycommon.RelayInfo{
+		UserGroup: "member", UsingGroup: "first",
+		PersonalGroupRatios: map[string]*hosttypes.PersonalGroupRatioSnapshot{
+			"personal": {Ratio: 0.2},
+		},
+	}
+	_, err := handleGroupRatioAt(ctx, info, time.Unix(150, 0))
+	require.NoError(t, err)
+	// A later edit must not alter prices for groups the first attempt never used.
+	require.NoError(t, ratio_setting.UpdateGroupRatioByJSONString(`{"first":20,"retry":30,"free":40,"personal":50,"future":60,"added":70}`))
+	require.NoError(t, ratio_setting.UpdateGroupGroupRatioByJSONString(`{"member":{"retry":9,"free":9,"personal":9,"future":9,"added":9}}`))
+	for _, tc := range []struct {
+		group   string
+		ratio   float64
+		special bool
+	}{
+		{"retry", 0.7, true},
+		{"free", 0, true},
+		{"personal", 0.2, true},
+		{"future", 6, false},
+		{"added", 1, false},
+	} {
+		ctx.Set("auto_group", tc.group)
+		ratio, err := handleGroupRatioAt(ctx, info, time.Unix(250, 0))
+		require.NoError(t, err)
+		assert.Equal(t, tc.ratio, ratio.GroupRatio, tc.group)
+		assert.Equal(t, tc.special, ratio.HasSpecialRatio, tc.group)
+		assert.Equal(t, tc.group, info.UsingGroup)
+	}
+}
+
+func TestPersonalGroupValidityFreezesAtFirstPricing(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(filepath.Join(t.TempDir(), "personal-validity.db")), &gorm.Config{})
+	require.NoError(t, err)
+	sqlDB, err := db.DB()
+	require.NoError(t, err)
+	previousDB := model.DB
+	previousGroups := ratio_setting.GroupRatio2JSONString()
+	previousSpecial := ratio_setting.GroupGroupRatio2JSONString()
+	model.DB = db
+	t.Cleanup(func() {
+		model.DB = previousDB
+		assert.NoError(t, sqlDB.Close())
+		assert.NoError(t, ratio_setting.UpdateGroupRatioByJSONString(previousGroups))
+		assert.NoError(t, ratio_setting.UpdateGroupGroupRatioByJSONString(previousSpecial))
+	})
+	require.NoError(t, db.AutoMigrate(&model.UserGroupRatio{}))
+	require.NoError(t, ratio_setting.UpdateGroupRatioByJSONString(`{"first":5,"retry":6,"future":7}`))
+	require.NoError(t, ratio_setting.UpdateGroupGroupRatioByJSONString(`{"member":{"first":3}}`))
+	rules := []model.UserGroupRatio{
+		{UserID: 77, Group: "first", Ratio: 2, Enabled: true, Version: 1, StartsAt: 150, EndsAt: 200},
+		{UserID: 77, Group: "retry", Ratio: 0, Enabled: true, Version: 1, StartsAt: 150, EndsAt: 200},
+		{UserID: 77, Group: "future", Ratio: 0.5, Enabled: true, Version: 1, StartsAt: 200, EndsAt: 300},
+	}
+	require.NoError(t, db.Create(&rules).Error)
+	for _, tc := range []struct {
+		name string
+		at   int64
+		want float64
+	}{
+		{"before_start_uses_collective", 149, 3},
+		{"start_inclusive_uses_personal", 150, 2},
+		{"before_end_uses_personal", 199, 2},
+		{"end_exclusive_uses_collective", 200, 3},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+			info := &relaycommon.RelayInfo{UserId: 77, UserGroup: "member", UsingGroup: "first"}
+			ratio, err := handleGroupRatioAt(ctx, info, time.Unix(tc.at, 0))
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, ratio.GroupRatio)
+			if tc.want == 2 {
+				require.NotNil(t, info.PersonalGroupRatio)
+				assert.Equal(t, tc.at, info.PersonalGroupRatio.PricedAt)
+			} else {
+				assert.Nil(t, info.PersonalGroupRatio)
+			}
+		})
+	}
+	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	info := &relaycommon.RelayInfo{UserId: 77, UserGroup: "member", UsingGroup: "first"}
+	_, err = handleGroupRatioAt(ctx, info, time.Unix(199, 0))
+	require.NoError(t, err)
+	for _, tc := range []struct {
+		group string
+		want  float64
+	}{{"first", 2}, {"retry", 0}, {"future", 7}} {
+		ctx.Set("auto_group", tc.group)
+		ratio, err := handleGroupRatioAt(ctx, info, time.Unix(201, 0))
+		require.NoError(t, err)
+		assert.Equal(t, tc.want, ratio.GroupRatio, "retry groups keep the first pricing snapshot")
+		if info.PersonalGroupRatio != nil {
+			assert.EqualValues(t, 199, info.PersonalGroupRatio.PricedAt)
+		}
+	}
+	newRequest := &relaycommon.RelayInfo{UserId: 77, UserGroup: "member", UsingGroup: "future"}
+	ratio, err := handleGroupRatioAt(ctx, newRequest, time.Unix(201, 0))
+	require.NoError(t, err)
+	assert.Equal(t, 0.5, ratio.GroupRatio, "new requests use the newly active personal rule")
+}

@@ -30,6 +30,7 @@ import {
   LayoutDashboard,
   ListTodo,
   MessageSquare,
+  Percent,
   PlugZap,
   Radio,
   ServerCog,
@@ -164,6 +165,12 @@ export function useSidebarData(badges: SidebarBadges = {}): SidebarData {
             title: t('Users'),
             url: '/users',
             icon: Users,
+          },
+          {
+            title: t('Group discounts'),
+            url: '/user-group-discounts',
+            icon: Percent,
+            requiredRole: ROLE.ADMIN,
           },
           {
             title: t('Redemption Codes'),

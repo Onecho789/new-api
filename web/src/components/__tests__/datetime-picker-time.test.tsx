@@ -17,9 +17,52 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { fireEvent, render, screen } from '@testing-library/react'
-import { expect, test, vi } from 'vitest'
+import userEvent from '@testing-library/user-event'
+import { afterEach, expect, test, vi } from 'vitest'
 
 import { DateTimePicker } from '../datetime-picker'
+
+afterEach(() => vi.unstubAllEnvs())
+
+test('selects a Beijing calendar day without shifting it to the browser calendar day', async () => {
+  vi.stubEnv('TZ', 'America/New_York')
+  const onChange = vi.fn()
+  render(
+    <DateTimePicker
+      timeZone='Asia/Shanghai'
+      value={new Date('2026-03-08T00:30:45+08:00')}
+      onChange={onChange}
+    />
+  )
+  await userEvent.click(screen.getByRole('button', { name: '2026-03-08' }))
+  await userEvent.click(screen.getByRole('button', { name: /Monday, March 9/ }))
+  expect(onChange.mock.calls[0][0].getTime()).toBe(
+    Date.parse('2026-03-09T00:30:45+08:00')
+  )
+})
+
+test.each(['America/New_York', 'Europe/Berlin', 'UTC'])(
+  'edits Beijing wall time independently of browser timezone %s with a daylight-saving gap',
+  (timeZone) => {
+    vi.stubEnv('TZ', timeZone)
+    const onChange = vi.fn()
+    render(
+      <DateTimePicker
+        timeZone='Asia/Shanghai'
+        value={new Date('2026-03-08T00:30:45+08:00')}
+        onChange={onChange}
+      />
+    )
+    expect(screen.getByRole('button', { name: '2026-03-08' })).toBeVisible()
+    expect(screen.getByLabelText('Time')).toHaveValue('00:30:45')
+    fireEvent.change(screen.getByLabelText('Time'), {
+      target: { value: '02:30:15' },
+    })
+    expect(onChange.mock.calls[0][0].getTime()).toBe(
+      Date.parse('2026-03-08T02:30:15+08:00')
+    )
+  }
+)
 
 test('shows the seconds of the selected time', () => {
   render(

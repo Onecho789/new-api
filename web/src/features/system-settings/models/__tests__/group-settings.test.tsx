@@ -18,6 +18,7 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { zodResolver } from '@hookform/resolvers/zod'
 import {
+  act,
   fireEvent,
   render,
   screen,
@@ -27,12 +28,18 @@ import {
 import userEvent from '@testing-library/user-event'
 import { useState } from 'react'
 import { useForm } from 'react-hook-form'
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { z } from 'zod'
 
 import { SettingsPageProvider } from '../../components/settings-page-context'
 import { positiveIntegerSchema } from '../../utils/numeric-field'
+import { GroupOverrideSchedule } from '../group-override-schedule'
 import { GroupRatioForm } from '../group-ratio-form'
+
+afterEach(() => {
+  vi.restoreAllMocks()
+  vi.useRealTimers()
+})
 
 const defaults = {
   GroupRatio: '{"default":1,"vip":0.8}',
@@ -79,6 +86,248 @@ function Fixture(props: {
 }
 
 describe('group settings workspace', () => {
+  it('reads legacy and scheduled special ratios, preserves small values and shows each schedule status', async () => {
+    const now = Date.parse('2026-11-13T12:00:00+08:00') / 1000
+    vi.spyOn(Date, 'now').mockReturnValue(now * 1000)
+    const rules = {
+      vip: {
+        default: 0.00005,
+        vip: { ratio: 0.005, enabled: true, starts_at: now, ends_at: now + 60 },
+        future: { ratio: 0.2, enabled: true, starts_at: now + 60, ends_at: 0 },
+        expired: { ratio: 0.3, enabled: true, starts_at: 0, ends_at: now },
+        disabled: {
+          ratio: 0.4,
+          enabled: false,
+          starts_at: now + 60,
+          ends_at: 0,
+        },
+      },
+    }
+    const onSave = vi.fn(async (_values: typeof defaults) => {})
+    render(
+      <Fixture
+        onSave={onSave}
+        initial={{ GroupGroupRatio: JSON.stringify(rules) }}
+      />
+    )
+    await userEvent.click(
+      screen.getByRole('tab', { name: 'Special ratio rules' })
+    )
+    expect(screen.getByText('0.00005')).toBeVisible()
+    expect(screen.getByText('0.005')).toBeVisible()
+    expect(screen.getAllByText('In effect')).toHaveLength(2)
+    expect(screen.getByText('Not started')).toBeVisible()
+    expect(screen.getByText('Expired')).toBeVisible()
+    expect(screen.getByText('Manually disabled')).toBeVisible()
+    expect(screen.getAllByText(/12:00:00/).length).toBeGreaterThan(0)
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Switch to JSON' })
+    )
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Switch to Visual' })
+    )
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Save group settings' })
+    )
+    await waitFor(() => expect(onSave).toHaveBeenCalled())
+    expect(JSON.parse(onSave.mock.calls[0][0].GroupGroupRatio)).toEqual(rules)
+  })
+
+  it('edits a scheduled rule, validates its end time and keeps unrelated rules unchanged', async () => {
+    const start = Date.parse('2026-11-13T12:00:00+08:00') / 1000
+    const original = {
+      vip: {
+        default: {
+          ratio: 0.005,
+          enabled: true,
+          starts_at: start,
+          ends_at: start + 3600,
+        },
+        vip: 0.8,
+      },
+      untouched: {
+        default: { ratio: 0.02, enabled: false, starts_at: 0, ends_at: 0 },
+      },
+    }
+    const onSave = vi.fn(async (_values: typeof defaults) => {})
+    render(
+      <Fixture
+        onSave={onSave}
+        initial={{ GroupGroupRatio: JSON.stringify(original) }}
+      />
+    )
+    await userEvent.click(
+      screen.getByRole('tab', { name: 'Special ratio rules' })
+    )
+    await userEvent.click(screen.getAllByRole('button', { name: 'Edit' })[0])
+    const dialog = within(
+      await screen.findByRole('dialog', { name: 'Edit ratio override' })
+    )
+    expect(dialog.getByRole('textbox', { name: 'Ratio' })).toHaveValue('0.005')
+    const end = within(
+      dialog.getByRole('group', { name: 'End time (Beijing time)' })
+    ).getByLabelText('Time')
+    fireEvent.change(end, { target: { value: '11:59:59' } })
+    await userEvent.click(dialog.getByRole('button', { name: 'Update' }))
+    expect(dialog.getByRole('alert')).toHaveTextContent(
+      'End time must be after start time'
+    )
+    fireEvent.change(end, { target: { value: '13:00:01' } })
+    await userEvent.click(
+      dialog.getByRole('switch', { name: 'Enable special ratio' })
+    )
+    await userEvent.click(dialog.getByRole('button', { name: 'Update' }))
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Save group settings' })
+    )
+    await waitFor(() => expect(onSave).toHaveBeenCalled())
+    expect(JSON.parse(onSave.mock.calls[0][0].GroupGroupRatio)).toEqual({
+      ...original,
+      vip: {
+        ...original.vip,
+        default: {
+          ...original.vip.default,
+          enabled: false,
+          ends_at: start + 3601,
+        },
+      },
+    })
+  })
+
+  it('changes scheduled status exactly at the inclusive start and exclusive end without a page refresh', () => {
+    vi.useFakeTimers()
+    const now = Date.parse('2026-11-13T12:00:00+08:00')
+    vi.setSystemTime(now)
+    render(
+      <GroupOverrideSchedule
+        rule={{
+          ratio: 0.5,
+          enabled: true,
+          starts_at: now / 1000 + 1,
+          ends_at: now / 1000 + 2,
+        }}
+      />
+    )
+    expect(screen.getByText('Not started')).toBeVisible()
+    act(() => vi.advanceTimersByTime(1000))
+    expect(screen.getByText('In effect')).toBeVisible()
+    act(() => vi.advanceTimersByTime(1000))
+    expect(screen.getByText('Expired')).toBeVisible()
+  })
+
+  it('shows incoming and outgoing scheduled rules in group details without treating objects as multipliers', async () => {
+    const now = Math.floor(Date.now() / 1000)
+    render(
+      <Fixture
+        initial={{
+          GroupGroupRatio: JSON.stringify({
+            vip: {
+              default: {
+                ratio: 0.005,
+                enabled: false,
+                starts_at: 0,
+                ends_at: 0,
+              },
+            },
+            default: {
+              vip: {
+                ratio: 0.000005,
+                enabled: true,
+                starts_at: now + 3600,
+                ends_at: 0,
+              },
+            },
+          }),
+        }}
+      />
+    )
+    await userEvent.click(screen.getAllByRole('button', { name: 'Details' })[0])
+    const detail = within(
+      await screen.findByRole('dialog', { name: 'Group details: default' })
+    )
+    expect(detail.getByText('0.005')).toBeVisible()
+    expect(detail.getByText('0.000005')).toBeVisible()
+    expect(detail.getByText('Manually disabled')).toBeVisible()
+    expect(detail.getByText('Not started')).toBeVisible()
+    expect(detail.getAllByText(/No end time/)).toHaveLength(2)
+  })
+
+  it('allows clearing both schedule boundaries and keeps manual disablement in the saved object', async () => {
+    const onSave = vi.fn(async (_values: typeof defaults) => {})
+    const timestamp = Date.parse('2026-11-13T12:00:00+08:00') / 1000
+    render(
+      <Fixture
+        onSave={onSave}
+        initial={{
+          GroupGroupRatio: JSON.stringify({
+            vip: {
+              default: {
+                ratio: 0.000005,
+                enabled: false,
+                starts_at: timestamp,
+                ends_at: timestamp + 3600,
+              },
+            },
+          }),
+        }}
+      />
+    )
+    await userEvent.click(
+      screen.getByRole('tab', { name: 'Special ratio rules' })
+    )
+    await userEvent.click(screen.getByRole('button', { name: 'Edit' }))
+    const dialog = within(
+      await screen.findByRole('dialog', { name: 'Edit ratio override' })
+    )
+    for (const label of [
+      'Start time (Beijing time)',
+      'End time (Beijing time)',
+    ]) {
+      await userEvent.click(
+        within(dialog.getByRole('group', { name: label })).getByRole('button', {
+          name: 'Clear',
+        })
+      )
+    }
+    expect(
+      dialog.getByRole('switch', { name: 'Enable special ratio' })
+    ).not.toBeChecked()
+    await userEvent.click(dialog.getByRole('button', { name: 'Update' }))
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Save group settings' })
+    )
+    await waitFor(() => expect(onSave).toHaveBeenCalled())
+    expect(JSON.parse(onSave.mock.calls[0][0].GroupGroupRatio)).toEqual({
+      vip: {
+        default: { ratio: 0.000005, enabled: false, starts_at: 0, ends_at: 0 },
+      },
+    })
+  })
+
+  it.each(['-1', 'Infinity', '9007199254740992', ''])(
+    'rejects invalid special multiplier %s without saving the rule',
+    async (value) => {
+      render(
+        <Fixture
+          initial={{ GroupGroupRatio: '{"vip":{"default":0.000005}}' }}
+        />
+      )
+      await userEvent.click(
+        screen.getByRole('tab', { name: 'Special ratio rules' })
+      )
+      await userEvent.click(screen.getByRole('button', { name: 'Edit' }))
+      const dialog = within(
+        await screen.findByRole('dialog', { name: 'Edit ratio override' })
+      )
+      fireEvent.change(dialog.getByRole('textbox', { name: 'Ratio' }), {
+        target: { value },
+      })
+      await userEvent.click(dialog.getByRole('button', { name: 'Update' }))
+      expect(dialog.getByRole('alert')).toHaveTextContent(
+        'Enter a valid non-negative multiplier'
+      )
+    }
+  )
   it('filters by description and clears search without discarding edits', async () => {
     const user = userEvent.setup()
     render(<Fixture />)
@@ -128,7 +377,9 @@ describe('group settings workspace', () => {
         .map((input) => input.value)
     ).toEqual(['group_2', 'group_1', 'default', 'vip'])
 
-    await user.click(screen.getByRole('button', { name: 'Save group settings' }))
+    await user.click(
+      screen.getByRole('button', { name: 'Save group settings' })
+    )
     await waitFor(() => expect(onSave).toHaveBeenCalled())
     const saved = onSave.mock.calls[0][0]
     expect(JSON.parse(saved.GroupRatio)).toEqual({
@@ -201,7 +452,9 @@ describe('group settings workspace', () => {
     expect(screen.getByRole('button', { name: 'Move vip up' })).toBeDisabled()
     expect(screen.getByRole('button', { name: 'Move vip down' })).toBeDisabled()
     await user.click(screen.getByRole('tab', { name: 'Pricing groups' }))
-    await user.click(screen.getByRole('button', { name: 'Save group settings' }))
+    await user.click(
+      screen.getByRole('button', { name: 'Save group settings' })
+    )
     await waitFor(() => expect(onSave).toHaveBeenCalled())
     expect(onSave.mock.calls[0]?.[0]).toEqual(
       expect.objectContaining({
@@ -244,7 +497,9 @@ describe('group settings workspace', () => {
     )
     expect(screen.getByText('Not in pricing table')).toBeVisible()
     await user.click(screen.getByRole('tab', { name: 'Pricing groups' }))
-    await user.click(screen.getByRole('button', { name: 'Save group settings' }))
+    await user.click(
+      screen.getByRole('button', { name: 'Save group settings' })
+    )
     await waitFor(() => expect(onSave).toHaveBeenCalled())
     expect(JSON.parse(onSave.mock.calls[0][0].AutoGroups)).toEqual([
       'vip',
@@ -286,7 +541,9 @@ describe('group settings workspace', () => {
       { target: { value: '0' } }
     )
     await user.click(screen.getByRole('tab', { name: 'Pricing groups' }))
-    await user.click(screen.getByRole('button', { name: 'Save group settings' }))
+    await user.click(
+      screen.getByRole('button', { name: 'Save group settings' })
+    )
     await waitFor(() =>
       expect(
         screen.getByRole('tab', { name: 'Auto group order' })

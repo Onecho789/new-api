@@ -2,7 +2,9 @@ package controller
 
 import (
 	"net/http"
+	"time"
 
+	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/setting"
@@ -35,6 +37,19 @@ func GetUserGroups(c *gin.Context) {
 			usableGroups[groupName] = map[string]any{
 				"ratio": service.GetUserGroupRatio(userGroup, groupName),
 				"desc":  desc,
+			}
+		}
+	}
+	if userId > 0 {
+		now := time.Now()
+		personalRules, err := model.ListUserGroupRatios(userId)
+		if err != nil {
+			common.ApiError(c, err)
+			return
+		}
+		for _, rule := range personalRules {
+			if group, usable := usableGroups[rule.Group]; usable && rule.IsEffectiveAt(now) {
+				group["ratio"] = rule.Ratio
 			}
 		}
 	}

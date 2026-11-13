@@ -151,6 +151,52 @@ func TestBatchUpdateAccumulatesTwoMaximumRequestCharges(t *testing.T) {
 	assert.Equal(t, 100, getUserQuotaFromDB(t, user.Id))
 }
 
+func TestPersonalSpendFundingPersistsWithBatchAndRedis(t *testing.T) {
+	truncateTables(t)
+	resetBatchUpdateTestState(t)
+	useUserCacheMiniRedis(t)
+	common.BatchUpdateEnabled = true
+
+	user := createReserveTestUser(t, 100)
+	reserved, err := TryReserveUserQuota(user.Id, 20)
+	require.NoError(t, err)
+	require.True(t, reserved)
+	reserved, err = TryReserveUserQuotaSync(user.Id, 50)
+	require.NoError(t, err)
+	require.True(t, reserved)
+	assert.Equal(t, 50, getUserQuotaFromDB(t, user.Id))
+	reserved, err = TryReserveUserQuotaSync(user.Id, 31)
+	require.NoError(t, err)
+	assert.False(t, reserved, "the outstanding ordinary batch debit still limits available funds")
+
+	require.NoError(t, DecreaseUserQuotaSync(user.Id, 5))
+	assert.Equal(t, 45, getUserQuotaFromDB(t, user.Id))
+	cached, err := GetUserCache(user.Id)
+	require.NoError(t, err)
+	assert.Equal(t, 25, cached.Quota)
+
+	batchUpdate()
+	assert.Equal(t, 25, getUserQuotaFromDB(t, user.Id), "personal charges must not be applied again by the batch updater")
+}
+
+func TestPersonalSpendFundingFailurePreservesCachedBalance(t *testing.T) {
+	truncateTables(t)
+	resetBatchUpdateTestState(t)
+	useUserCacheMiniRedis(t)
+	common.BatchUpdateEnabled = true
+	user := createReserveTestUser(t, 100)
+	require.NoError(t, populateUserCache(user))
+	require.NoError(t, DB.Delete(&user).Error)
+
+	reserved, err := TryReserveUserQuotaSync(user.Id, 10)
+	assert.False(t, reserved)
+	assert.ErrorIs(t, err, gorm.ErrRecordNotFound)
+	assert.ErrorIs(t, DecreaseUserQuotaSync(user.Id, 5), gorm.ErrRecordNotFound)
+	cached, err := cacheGetUserBase(user.Id)
+	require.NoError(t, err)
+	assert.Equal(t, 100, cached.Quota)
+}
+
 func TestBatchUpdateAccumulatorSaturatesOverflow(t *testing.T) {
 	resetBatchUpdateTestState(t)
 

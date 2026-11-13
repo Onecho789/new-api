@@ -145,6 +145,46 @@ export interface ManageUserQuotaPayload {
   value: number
 }
 
+export interface UserGroupRatioInput {
+  group: string
+  ratio: number
+  min_daily_quota: number
+  enabled: boolean
+  version?: number
+  daily_check_enabled?: boolean
+  starts_at?: number
+  ends_at?: number
+  duration_seconds?: number
+}
+
+export interface UserGroupRatio extends UserGroupRatioInput {
+  version: number
+  today_quota: number
+  today_pending: number
+  status:
+    | 'active'
+    | 'grace_period'
+    | 'pending_settlement'
+    | 'manually_disabled'
+    | 'auto_disabled'
+    | 'scheduled'
+    | 'expired'
+  enabled_at: number
+  disabled_at: number
+  disable_reason: '' | 'manual' | 'below_daily_minimum'
+  last_check_day: string
+  last_check_at: number
+  last_check_quota: number
+  last_check_status: '' | 'passed' | 'pending' | 'disabled' | 'grace'
+}
+
+export interface UserGroupRatiosData {
+  user_id: number
+  timezone: 'Asia/Shanghai'
+  day: string
+  rules: UserGroupRatio[]
+}
+
 // ============================================================================
 // Dialog Types
 // ============================================================================

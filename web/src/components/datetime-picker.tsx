@@ -18,6 +18,7 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { ChevronDownIcon } from 'lucide-react'
 import * as React from 'react'
+import { TZDate } from 'react-day-picker'
 import { enUS, fr, ja, ru, vi, zhCN, zhTW } from 'react-day-picker/locale'
 import { useTranslation } from 'react-i18next'
 
@@ -29,7 +30,6 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from '@/components/ui/popover'
-import dayjs from '@/lib/dayjs'
 import { cn } from '@/lib/utils'
 
 const calendarLocales = {
@@ -47,6 +47,7 @@ interface DateTimePickerProps {
   onChange?: (date: Date | undefined) => void
   placeholder?: string
   className?: string
+  timeZone?: string
 }
 
 export function DateTimePicker({
@@ -54,29 +55,39 @@ export function DateTimePicker({
   onChange,
   placeholder,
   className,
+  timeZone,
 }: DateTimePickerProps) {
   const { t, i18n } = useTranslation()
   const placeholderText = placeholder ?? t('Select date')
   const calendarLocale =
     calendarLocales[i18n.language as keyof typeof calendarLocales] ?? enUS
-  const currentYear = new Date().getFullYear()
+  const currentYear = (
+    timeZone ? TZDate.tz(timeZone) : new Date()
+  ).getFullYear()
   const [open, setOpen] = React.useState(false)
   const [date, setDate] = React.useState<Date | undefined>(value)
   const [month, setMonth] = React.useState<Date | undefined>(value)
   const [time, setTime] = React.useState<string>('00:00:00')
 
   React.useEffect(() => {
-    setDate(value)
-    setMonth(value)
-    if (value) {
-      setTime(dayjs(value).format('HH:mm:ss'))
+    const selected = value && timeZone ? new TZDate(value, timeZone) : value
+    setDate(selected)
+    setMonth(selected)
+    if (selected) {
+      setTime(
+        [selected.getHours(), selected.getMinutes(), selected.getSeconds()]
+          .map((part) => String(part).padStart(2, '0'))
+          .join(':')
+      )
     }
-  }, [value])
+  }, [value, timeZone])
 
   const handleDateSelect = (selectedDate: Date | undefined) => {
     if (selectedDate) {
       const [hours, minutes, seconds = 0] = time.split(':').map(Number)
-      const newDate = new Date(selectedDate)
+      const newDate = timeZone
+        ? new TZDate(selectedDate, timeZone)
+        : new Date(selectedDate)
       newDate.setHours(hours, minutes, seconds, 0)
       setDate(newDate)
       setMonth(newDate)
@@ -99,7 +110,7 @@ export function DateTimePicker({
     if (date) {
       // A browser may omit :00 seconds from the value.
       const [hours, minutes, seconds = 0] = newTime.split(':').map(Number)
-      const newDate = new Date(date)
+      const newDate = timeZone ? new TZDate(date, timeZone) : new Date(date)
       newDate.setHours(hours, minutes, seconds, 0)
       setDate(newDate)
       onChange?.(newDate)
@@ -127,20 +138,31 @@ export function DateTimePicker({
             />
           }
         >
-          {date ? dayjs(date).format('YYYY-MM-DD') : placeholderText}
+          {date
+            ? `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`
+            : placeholderText}
           <ChevronDownIcon className='h-4 w-4 opacity-50' />
         </PopoverTrigger>
         <PopoverContent className='w-auto overflow-hidden p-0' align='start'>
           <Calendar
             mode='single'
+            timeZone={timeZone}
             selected={date}
             month={month}
             onMonthChange={setMonth}
             captionLayout='dropdown'
             onSelect={handleDateSelect}
             locale={calendarLocale}
-            startMonth={new Date(currentYear - 100, 0)}
-            endMonth={new Date(currentYear + 100, 11)}
+            startMonth={
+              timeZone
+                ? new TZDate(currentYear - 100, 0, 1, timeZone)
+                : new Date(currentYear - 100, 0)
+            }
+            endMonth={
+              timeZone
+                ? new TZDate(currentYear + 100, 11, 1, timeZone)
+                : new Date(currentYear + 100, 11)
+            }
           />
         </PopoverContent>
       </Popover>
@@ -160,7 +182,7 @@ export function DateTimePicker({
           size='icon'
           onClick={handleClear}
           className='shrink-0'
-          aria-label='Clear'
+          aria-label={t('Clear')}
         >
           <span aria-hidden='true'>✕</span>
         </Button>

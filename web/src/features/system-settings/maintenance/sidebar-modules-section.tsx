@@ -162,6 +162,12 @@ export function SidebarModulesSection({
         title: t('Users'),
         description: t('Administer user accounts and roles.'),
       },
+      'user-group-discounts': {
+        title: t('Group discounts'),
+        description: t(
+          'Manage group discounts and daily spending requirements.'
+        ),
+      },
       setting: {
         title: t('System settings'),
         description: t('Advanced platform configuration.'),

@@ -104,8 +104,8 @@ func cacheApplyTokenQuotaDelta(id int, key string, delta int64) (cacheQuotaResul
 
 // persistUserQuotaDelta 把已在缓存侧预扣成功的增量落库；批量模式下入队，
 // 直写模式下要求行存在（用户已删除时报错，交由调用方补偿缓存）。
-func persistUserQuotaDelta(id int, delta int) error {
-	if common.BatchUpdateEnabled {
+func persistUserQuotaDelta(id int, delta int, synchronous bool) error {
+	if common.BatchUpdateEnabled && !synchronous {
 		addNewRecord(BatchUpdateTypeUserQuota, id, delta)
 		return nil
 	}
@@ -162,6 +162,17 @@ func reserveTokenQuotaDB(id int, quota int) (bool, error) {
 // 缓存命中时以缓存余额为准（避免批量模式下过期的数据库余额放大并发超扣）；
 // Redis 异常或水合失败时降级为数据库条件更新，保证服务可用。
 func TryReserveUserQuota(id int, quota int) (bool, error) {
+	return tryReserveUserQuota(id, quota, false)
+}
+
+// TryReserveUserQuotaSync persists reservations before a personal-spend guard
+// can be closed. It retains the Redis balance check when batch balances differ
+// from the database, but never queues this reservation in memory.
+func TryReserveUserQuotaSync(id int, quota int) (bool, error) {
+	return tryReserveUserQuota(id, quota, true)
+}
+
+func tryReserveUserQuota(id int, quota int, synchronous bool) (bool, error) {
 	if quota < 0 {
 		return false, errors.New("quota cannot be negative")
 	}
@@ -187,7 +198,7 @@ func TryReserveUserQuota(id int, quota int) (bool, error) {
 	if result == cacheQuotaInsufficient {
 		return false, nil
 	}
-	if err = persistUserQuotaDelta(id, -quota); err != nil {
+	if err = persistUserQuotaDelta(id, -quota, synchronous); err != nil {
 		compensated, compensateErr := cacheApplyUserQuotaDelta(id, int64(quota))
 		if compensateErr != nil || compensated != cacheQuotaOK {
 			common.SysError(common.LogText("failed to compensate reserved user quota: result=%d error=%v", compensated, compensateErr))
@@ -195,6 +206,28 @@ func TryReserveUserQuota(id int, quota int) (bool, error) {
 		return false, err
 	}
 	return true, nil
+}
+
+// DecreaseUserQuotaSync acknowledges a personal-spend charge only after the
+// primary database commits it. A failed charge must not change cached funds.
+func DecreaseUserQuotaSync(id int, quota int) error {
+	if quota < 0 {
+		return errors.New("quota cannot be negative")
+	}
+	if quota == 0 {
+		return nil
+	}
+	result := DB.Model(&User{}).Where("id = ?", id).Update("quota", gorm.Expr("quota - ?", quota))
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected != 1 {
+		return gorm.ErrRecordNotFound
+	}
+	if err := cacheDecrUserQuota(id, int64(quota)); err != nil {
+		common.SysError(common.LogText("failed to sync settled personal group charge to user quota cache: %s", err.Error()))
+	}
+	return nil
 }
 
 // TryReserveTokenQuota atomically checks and deducts a token quota. Unlimited

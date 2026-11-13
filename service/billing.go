@@ -38,6 +38,9 @@ func PreConsumeBilling(c *gin.Context, preConsumedQuota int, relayInfo *relaycom
 			types.ErrOptionWithSkipRetry(),
 		)
 	}
+	if err := PreparePersonalGroupSpendGuard(relayInfo); err != nil {
+		return types.NewError(err, types.ErrorCodeUpdateDataError, types.ErrOptionWithSkipRetry())
+	}
 	if relayInfo != nil && relayInfo.Billing != nil {
 		if err := relayInfo.Billing.ReserveBeforeSubmit(preConsumedQuota); err != nil {
 			var apiErr *types.NewAPIError
@@ -50,6 +53,14 @@ func PreConsumeBilling(c *gin.Context, preConsumedQuota int, relayInfo *relaycom
 	}
 	session, apiErr := NewBillingSession(c, relayInfo, preConsumedQuota)
 	if apiErr != nil {
+		switch apiErr.GetErrorCode() {
+		case types.ErrorCodeInsufficientUserQuota, types.ErrorCodePreConsumeTokenQuotaFailed, types.ErrorCodeQueryDataError:
+			// These failures precede funding. Ambiguous funding errors retain
+			// their guard instead of pretending the request spent nothing.
+			if err := cancelPersonalGroupSpend(relayInfo); err != nil {
+				logger.LogError(c, fmt.Sprintf("failed to close unused personal spend guard: %v", err))
+			}
+		}
 		return apiErr
 	}
 	relayInfo.Billing = session
@@ -101,9 +112,16 @@ func SettleBilling(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, actualQuo
 	}
 
 	// 回退：无 BillingSession 时使用旧路径
+	if err := beginPersonalGroupSpend(relayInfo, actualQuota); err != nil {
+		return err
+	}
 	quotaDelta := actualQuota - relayInfo.FinalPreConsumedQuota
 	if quotaDelta != 0 {
-		return PostConsumeQuota(relayInfo, quotaDelta, relayInfo.FinalPreConsumedQuota, true)
+		result, err := postConsumeQuotaWithResult(relayInfo, quotaDelta, relayInfo.FinalPreConsumedQuota, true)
+		if !result.FundingApplied {
+			return err
+		}
+		return errors.Join(err, completePersonalGroupSpend(relayInfo))
 	}
-	return nil
+	return completePersonalGroupSpend(relayInfo)
 }

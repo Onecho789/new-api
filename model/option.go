@@ -3,8 +3,10 @@ package model
 import (
 	"errors"
 	"maps"
+	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
@@ -23,6 +25,8 @@ type Option struct {
 	Key   string `json:"key" gorm:"primaryKey"`
 	Value string `json:"value"`
 }
+
+var groupSpecialRatioOptionMutex sync.Mutex
 
 func AllOption() ([]*Option, error) {
 	var options []*Option
@@ -210,19 +214,35 @@ func loadOptionsFromDatabase() {
 	}()
 	passkeyOptionMutex.Lock()
 	defer passkeyOptionMutex.Unlock()
+	groupSpecialRatioOptionMutex.Lock()
+	defer groupSpecialRatioOptionMutex.Unlock()
 	options, err := AllOption()
 	if err != nil {
 		common.SysLog("failed to load options from database: " + err.Error())
 		return
 	}
 	passkeyOptions := make(map[string]string)
+	var groupSpecialRatioOption *Option
 	for _, option := range options {
 		if IsPasskeyDomainOption(option.Key) {
 			passkeyOptions[option.Key] = option.Value
 			continue
 		}
+		if ratio_setting.IsGroupGroupRatioOption(option.Key) {
+			// Prefer the namespaced value if an older database contains both
+			// aliases. New saves keep the two rows identical in one transaction.
+			if groupSpecialRatioOption == nil || option.Key == ratio_setting.GroupGroupRatioConfigKey {
+				groupSpecialRatioOption = option
+			}
+			continue
+		}
 		err := updateOptionMap(option.Key, option.Value)
 		if err != nil {
+			common.SysLog(common.LogText("failed to update option map: %s", err.Error()))
+		}
+	}
+	if groupSpecialRatioOption != nil {
+		if err := updateOptionMap(groupSpecialRatioOption.Key, groupSpecialRatioOption.Value); err != nil {
 			common.SysLog(common.LogText("failed to update option map: %s", err.Error()))
 		}
 	}
@@ -238,6 +258,9 @@ func SyncOptions(frequency int) {
 }
 
 func validateOptionValue(key string, value string) error {
+	if ratio_setting.IsGroupGroupRatioOption(key) {
+		return ratio_setting.ValidateGroupGroupRatioJSON(value)
+	}
 	if key == legacyAccessTokenRetireAtKey {
 		return errLegacyRetireAtReadOnly
 	}
@@ -288,6 +311,9 @@ func validateOptionValue(key string, value string) error {
 }
 
 func UpdateOption(key string, value string) error {
+	if ratio_setting.IsGroupGroupRatioOption(key) {
+		return UpdateOptionsBulk(map[string]string{key: value})
+	}
 	if IsRequestPolicyOption(key) {
 		return UpdateRequestPolicyOptions(map[string]string{key: value})
 	}
@@ -317,6 +343,20 @@ func UpdateOption(key string, value string) error {
 func UpdateOptionsBulk(values map[string]string) error {
 	if len(values) == 0 {
 		return nil
+	}
+	legacy, hasLegacy := values[ratio_setting.GroupGroupRatioOptionKey]
+	namespaced, hasNamespaced := values[ratio_setting.GroupGroupRatioConfigKey]
+	if hasLegacy || hasNamespaced {
+		if hasLegacy && hasNamespaced && legacy != namespaced {
+			return common.NewMessage("Conflicting group special multiplier options")
+		}
+		value := legacy
+		if hasNamespaced {
+			value = namespaced
+		}
+		values = maps.Clone(values)
+		values[ratio_setting.GroupGroupRatioOptionKey] = value
+		values[ratio_setting.GroupGroupRatioConfigKey] = value
 	}
 	for key := range values {
 		if IsPasskeyDomainOption(key) {
@@ -348,9 +388,14 @@ func UpdateOptionsBulk(values map[string]string) error {
 			break
 		}
 	}
+	if hasLegacy || hasNamespaced {
+		groupSpecialRatioOptionMutex.Lock()
+		defer groupSpecialRatioOptionMutex.Unlock()
+	}
 
 	err := DB.Transaction(func(tx *gorm.DB) error {
-		for k, v := range values {
+		for _, k := range slices.Sorted(maps.Keys(values)) {
+			v := values[k]
 			option := Option{Key: k}
 			if err := tx.FirstOrCreate(&option, Option{Key: k}).Error; err != nil {
 				return err
@@ -365,7 +410,8 @@ func UpdateOptionsBulk(values map[string]string) error {
 	if err != nil {
 		return err
 	}
-	for k, v := range values {
+	for _, k := range slices.Sorted(maps.Keys(values)) {
+		v := values[k]
 		if err := updateOptionMap(k, v); err != nil {
 			return err
 		}
@@ -385,6 +431,14 @@ func updateOptionMap(key string, value string) (err error) {
 	}
 	common.OptionMapRWMutex.Lock()
 	defer common.OptionMapRWMutex.Unlock()
+	if ratio_setting.IsGroupGroupRatioOption(key) {
+		if err := ratio_setting.UpdateGroupGroupRatioByJSONString(value); err != nil {
+			return err
+		}
+		common.OptionMap[ratio_setting.GroupGroupRatioOptionKey] = value
+		common.OptionMap[ratio_setting.GroupGroupRatioConfigKey] = value
+		return nil
+	}
 	common.OptionMap[key] = value
 
 	// 检查是否是模型配置 - 使用更规范的方式处理
@@ -669,8 +723,6 @@ func updateOptionMap(key string, value string) (err error) {
 		err = ratio_setting.UpdateModelRatioByJSONString(value)
 	case "GroupRatio":
 		err = ratio_setting.UpdateGroupRatioByJSONString(value)
-	case "GroupGroupRatio":
-		err = ratio_setting.UpdateGroupGroupRatioByJSONString(value)
 	case "UserUsableGroups":
 		err = setting.UpdateUserUsableGroupsByJSONString(value)
 	case "CompletionRatio":

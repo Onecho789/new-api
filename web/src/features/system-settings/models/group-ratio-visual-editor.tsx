@@ -39,6 +39,7 @@ import { useTranslation } from 'react-i18next'
 import { AutoGroupOrderItem } from '@/components/auto-group-order-item'
 import { StaticDataTable } from '@/components/data-table/static/static-data-table'
 import { StaticRowActions } from '@/components/data-table/static/static-row-actions'
+import { DateTimePicker } from '@/components/datetime-picker'
 import { Dialog } from '@/components/dialog'
 import {
   sideDrawerContentClassName,
@@ -78,11 +79,18 @@ import {
   SheetHeader,
   SheetTitle,
 } from '@/components/ui/sheet'
+import { Switch } from '@/components/ui/switch'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { toIntlLocale } from '@/i18n/languages'
 import { formatNumber } from '@/lib/format'
 
 import { safeJsonParse } from '../utils/json-parser'
+import {
+  GroupOverrideSchedule,
+  type GroupOverrideMap,
+  type GroupOverrideRule,
+  type GroupOverrideValue,
+} from './group-override-schedule'
 import { GroupSpecialUsableRulesEditor } from './group-special-usable-editor'
 
 export type GroupSettingsSection =
@@ -147,13 +155,18 @@ function parseUsableMap(value: string): Record<string, string> {
   })
 }
 
-function parseNestedRatioMap(
-  value: string
-): Record<string, Record<string, number>> {
-  return safeJsonParse<Record<string, Record<string, number>>>(value, {
+function parseNestedRatioMap(value: string): GroupOverrideMap {
+  return safeJsonParse<GroupOverrideMap>(value, {
     fallback: {},
     silent: true,
   })
+}
+
+function normalizeGroupOverride(value: GroupOverrideValue): GroupOverrideRule {
+  if (typeof value === 'number') {
+    return { ratio: value, enabled: true, starts_at: 0, ends_at: 0 }
+  }
+  return value
 }
 
 function buildGroupPricingRows(
@@ -782,9 +795,8 @@ function GroupPricingTable({
   )
 }
 
-type GroupOverride = {
+type GroupOverride = GroupOverrideRule & {
   targetGroup: string
-  ratio: number
 }
 
 type GroupOverrideRulesProps = {
@@ -823,15 +835,15 @@ function GroupOverrideRules({
     const map = parseNestedRatioMap(groupGroupRatio)
     return Object.entries(map).map(([userGroup, overrides]) => ({
       userGroup,
-      overrides: Object.entries(overrides).map(([targetGroup, ratio]) => ({
+      overrides: Object.entries(overrides).map(([targetGroup, value]) => ({
         targetGroup,
-        ratio,
+        ...normalizeGroupOverride(value),
       })),
     }))
   }, [groupGroupRatio])
 
   const emitMap = useCallback(
-    (map: Record<string, Record<string, number>>) => {
+    (map: GroupOverrideMap) => {
       onChange('GroupGroupRatio', JSON.stringify(map, null, 2))
     },
     [onChange]
@@ -873,7 +885,7 @@ function GroupOverrideRules({
   )
 
   const handleOverrideSave = useCallback(
-    (targetGroup: string, ratio: number, oldTargetGroup?: string) => {
+    (targetGroup: string, rule: GroupOverrideRule, oldTargetGroup?: string) => {
       if (!overrideUserGroup) return
       const map = parseNestedRatioMap(groupGroupRatio)
       if (!map[overrideUserGroup]) {
@@ -882,7 +894,10 @@ function GroupOverrideRules({
       if (oldTargetGroup && oldTargetGroup !== targetGroup) {
         delete map[overrideUserGroup][oldTargetGroup]
       }
-      map[overrideUserGroup][targetGroup] = ratio
+      map[overrideUserGroup][targetGroup] =
+        rule.enabled && rule.starts_at === 0 && rule.ends_at === 0
+          ? rule.ratio
+          : rule
       emitMap(map)
       setOverrideDialogOpen(false)
     },
@@ -910,6 +925,9 @@ function GroupOverrideRules({
         <CardDescription>
           {t(
             'Each rule reads as a sentence: users of one group pay a special ratio when billed as another group. Without a rule, the billing group base ratio applies.'
+          )}{' '}
+          {t(
+            "When a special ratio is inactive, the billing group's base ratio applies."
           )}
         </CardDescription>
       </CardHeader>
@@ -1049,6 +1067,13 @@ function GroupOverrideRules({
                                 },
                               },
                               {
+                                id: 'schedule',
+                                header: t('Schedule (Beijing time)'),
+                                cell: (override) => (
+                                  <GroupOverrideSchedule rule={override} />
+                                ),
+                              },
+                              {
                                 id: 'actions',
                                 header: t('Actions'),
                                 className: 'text-right',
@@ -1140,7 +1165,11 @@ function GroupOverrideRules({
 type GroupOverrideDialogProps = {
   open: boolean
   onOpenChange: (open: boolean) => void
-  onSave: (targetGroup: string, ratio: number, oldTargetGroup?: string) => void
+  onSave: (
+    targetGroup: string,
+    rule: GroupOverrideRule,
+    oldTargetGroup?: string
+  ) => void
   editData: GroupOverride | null
   userGroup: string | null
   groupOptions: string[]
@@ -1159,8 +1188,18 @@ function GroupOverrideDialog({
   const { t } = useTranslation()
   const [targetGroup, setTargetGroup] = useState<string | null>(null)
   const [ratio, setRatio] = useState('')
+  const [enabled, setEnabled] = useState(true)
+  const [startsAt, setStartsAt] = useState<Date>()
+  const [endsAt, setEndsAt] = useState<Date>()
+  const [error, setError] = useState('')
 
   useEffect(() => {
+    setError('')
+    setEnabled(editData?.enabled ?? true)
+    setStartsAt(
+      editData?.starts_at ? new Date(editData.starts_at * 1000) : undefined
+    )
+    setEndsAt(editData?.ends_at ? new Date(editData.ends_at * 1000) : undefined)
     if (!open) {
       setTargetGroup(null)
       setRatio('')
@@ -1174,11 +1213,38 @@ function GroupOverrideDialog({
   const baseRatio = targetGroup ? baseRatioByName.get(targetGroup) : undefined
 
   const handleSave = () => {
-    if (!targetGroup || !ratio.trim()) return
-    const parsedRatio = Number.parseFloat(ratio)
-    if (Number.isNaN(parsedRatio)) return
+    if (!targetGroup) return
+    const parsedRatio = Number(ratio)
+    if (
+      !ratio.trim() ||
+      !Number.isFinite(parsedRatio) ||
+      parsedRatio < 0 ||
+      parsedRatio > Number.MAX_SAFE_INTEGER
+    ) {
+      setError(t('Enter a valid non-negative multiplier'))
+      return
+    }
+    const starts_at = startsAt ? Math.floor(startsAt.getTime() / 1000) : 0
+    const ends_at = endsAt ? Math.floor(endsAt.getTime() / 1000) : 0
+    if (
+      ![starts_at, ends_at].every(
+        (value) =>
+          Number.isSafeInteger(value) && value >= 0 && value <= 253402300799
+      )
+    ) {
+      setError(t('Choose dates between 1970 and 9999'))
+      return
+    }
+    if (starts_at > 0 && ends_at > 0 && ends_at <= starts_at) {
+      setError(t('End time must be after start time'))
+      return
+    }
 
-    onSave(targetGroup, parsedRatio, editData?.targetGroup)
+    onSave(
+      targetGroup,
+      { ratio: parsedRatio, enabled, starts_at, ends_at },
+      editData?.targetGroup
+    )
     setTargetGroup(null)
     setRatio('')
   }
@@ -1228,13 +1294,9 @@ function GroupOverrideDialog({
         <div className='space-y-2'>
           <Label>{t('Ratio')}</Label>
           <Input
+            aria-label={t('Ratio')}
             value={ratio}
-            onChange={(e) => {
-              const val = e.target.value
-              if (val === '' || !Number.isNaN(Number.parseFloat(val))) {
-                setRatio(val)
-              }
-            }}
+            onChange={(e) => setRatio(e.target.value)}
             placeholder={baseRatio === undefined ? '0.9' : String(baseRatio)}
           />
           <p className='text-muted-foreground text-xs'>
@@ -1249,6 +1311,52 @@ function GroupOverrideDialog({
                 )}
           </p>
         </div>
+        <div className='flex items-center justify-between gap-3'>
+          <Label htmlFor='special-ratio-enabled'>
+            {t('Enable special ratio')}
+          </Label>
+          <Switch
+            id='special-ratio-enabled'
+            checked={enabled}
+            onCheckedChange={setEnabled}
+          />
+        </div>
+        <div
+          role='group'
+          aria-label={t('Start time (Beijing time)')}
+          className='space-y-2'
+        >
+          <Label>{t('Start time (Beijing time)')}</Label>
+          <DateTimePicker
+            timeZone='Asia/Shanghai'
+            value={startsAt}
+            onChange={setStartsAt}
+            placeholder={t('Starts immediately')}
+          />
+        </div>
+        <div
+          role='group'
+          aria-label={t('End time (Beijing time)')}
+          className='space-y-2'
+        >
+          <Label>{t('End time (Beijing time)')}</Label>
+          <DateTimePicker
+            timeZone='Asia/Shanghai'
+            value={endsAt}
+            onChange={setEndsAt}
+            placeholder={t('No end time')}
+          />
+        </div>
+        <p className='text-muted-foreground text-xs'>
+          {t(
+            'Special ratios apply only while enabled and within the selected period. Empty start means immediately; empty end means no expiry.'
+          )}
+        </p>
+        {error && (
+          <p role='alert' className='text-destructive text-sm'>
+            {error}
+          </p>
+        )}
       </div>
     </Dialog>
   )
@@ -1301,16 +1409,22 @@ function GroupDetailSheet(props: GroupDetailSheetProps) {
     )
 
     // Overrides that apply when other user groups bill as this group
-    const incomingOverrides: { userGroup: string; ratio: number }[] = []
+    const incomingOverrides: (GroupOverrideRule & { userGroup: string })[] = []
     for (const [userGroup, overrides] of Object.entries(overrideMap)) {
       if (Object.hasOwn(overrides, name)) {
-        incomingOverrides.push({ userGroup, ratio: overrides[name] })
+        incomingOverrides.push({
+          userGroup,
+          ...normalizeGroupOverride(overrides[name]),
+        })
       }
     }
 
     // Overrides that apply when users of this group bill as other groups
     const outgoingOverrides = Object.entries(overrideMap[name] ?? {}).map(
-      ([targetGroup, ratio]) => ({ targetGroup, ratio })
+      ([targetGroup, value]) => ({
+        targetGroup,
+        ...normalizeGroupOverride(value),
+      })
     )
 
     // Visibility rules targeting this group
@@ -1430,7 +1544,10 @@ function GroupDetailSheet(props: GroupDetailSheetProps) {
                       <span>
                         {t('Users in {{group}}', { group: item.userGroup })}
                       </span>
-                      <span className='font-medium'>{item.ratio}</span>
+                      <div className='space-y-1 text-right'>
+                        <span className='font-medium'>{item.ratio}</span>
+                        <GroupOverrideSchedule rule={item} />
+                      </div>
                     </li>
                   ))}
                 </ul>
@@ -1455,7 +1572,10 @@ function GroupDetailSheet(props: GroupDetailSheetProps) {
                           group: item.targetGroup,
                         })}
                       </span>
-                      <span className='font-medium'>{item.ratio}</span>
+                      <div className='space-y-1 text-right'>
+                        <span className='font-medium'>{item.ratio}</span>
+                        <GroupOverrideSchedule rule={item} />
+                      </div>
                     </li>
                   ))}
                 </ul>

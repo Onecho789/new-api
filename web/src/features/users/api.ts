@@ -32,6 +32,8 @@ import type {
   ManageUserAction,
   ManageUserQuotaPayload,
   ApiResponse,
+  UserGroupRatioInput,
+  UserGroupRatiosData,
 } from './types'
 
 // A step-up proof is single-use, so the request carrying it must never be
@@ -100,6 +102,22 @@ export async function searchUsers(
  */
 export async function getUser(id: number): Promise<ApiResponse<User>> {
   const res = await api.get(`/api/user/${id}`)
+  return res.data
+}
+
+export async function getUserGroupRatios(
+  id: number,
+  signal?: AbortSignal
+): Promise<ApiResponse<UserGroupRatiosData>> {
+  const res = await api.get(`/api/user/${id}/group-ratios`, { signal })
+  return res.data
+}
+
+export async function updateUserGroupRatios(
+  id: number,
+  rules: UserGroupRatioInput[]
+): Promise<ApiResponse<UserGroupRatiosData>> {
+  const res = await api.put(`/api/user/${id}/group-ratios`, { rules })
   return res.data
 }
 

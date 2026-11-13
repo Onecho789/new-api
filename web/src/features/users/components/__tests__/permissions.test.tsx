@@ -43,6 +43,18 @@ const label = "View other accounts' audit logs"
 const description =
   'View audit records from user and admin roles. Root records are always excluded.'
 
+it('keeps the user membership group but does not load or edit discounts in user details', async () => {
+  const get = renderPermissions(100)
+  await screen.findByDisplayValue('Managed admin')
+  expect(screen.getByRole('combobox', { name: 'Group' })).toBeInTheDocument()
+  expect(
+    screen.queryByRole('heading', { name: 'Group discounts' })
+  ).not.toBeInTheDocument()
+  expect(
+    get.mock.calls.some(([url]) => url === '/api/user/2/group-ratios')
+  ).toBe(false)
+})
+
 function renderPermissions(viewerRole: number, allowed?: boolean) {
   useAuthStore
     .getState()
@@ -73,6 +85,19 @@ function renderPermissions(viewerRole: number, allowed?: boolean) {
     }
     if (url === '/api/group/') {
       return { data: { success: true, data: ['default'] } }
+    }
+    if (url === '/api/user/2/group-ratios') {
+      return {
+        data: {
+          success: true,
+          data: {
+            user_id: 2,
+            timezone: 'Asia/Shanghai',
+            day: '2026-11-12',
+            rules: [],
+          },
+        },
+      }
     }
     if (url === '/api/verify/methods') {
       return {
